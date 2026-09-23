@@ -14,7 +14,12 @@ use fq_net::NodeEvent;
 const DEAD_BROADCAST: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 1);
 
-fn app_config(dir: PathBuf, name: &str, ports: (u16, u16), bootstrap: Vec<SocketAddr>) -> AppConfig {
+fn app_config(
+    dir: PathBuf,
+    name: &str,
+    ports: (u16, u16),
+    bootstrap: Vec<SocketAddr>,
+) -> AppConfig {
     let mut config = AppConfig::new(dir, name);
     config.bind = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
     config.discovery_port = ports.0;
@@ -35,11 +40,7 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-async fn start_pair(
-    tag: &str,
-    a_ports: (u16, u16),
-    b_ports: (u16, u16),
-) -> (App, App) {
+async fn start_pair(tag: &str, a_ports: (u16, u16), b_ports: (u16, u16)) -> (App, App) {
     let a = App::start(app_config(
         temp_dir(&format!("{tag}-a")),
         "Alice",
@@ -78,8 +79,16 @@ async fn wait_discovery(a: &App, b: &App) {
     }
     panic!(
         "discovery timeout: a_peers={:?} b_peers={:?}",
-        a.node().peers().iter().map(|p| p.node_id.to_hex()).collect::<Vec<_>>(),
-        b.node().peers().iter().map(|p| p.node_id.to_hex()).collect::<Vec<_>>(),
+        a.node()
+            .peers()
+            .iter()
+            .map(|p| p.node_id.to_hex())
+            .collect::<Vec<_>>(),
+        b.node()
+            .peers()
+            .iter()
+            .map(|p| p.node_id.to_hex())
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -93,7 +102,10 @@ async fn group_text_fans_out_and_receiver_auto_creates_group() {
     assert!(group_id.starts_with("group:"), "群 ID 前缀应为 group:");
 
     // A 发群消息
-    let (sent, queued) = a.send_group_text(&group_id, "大家好,这是群消息").await.unwrap();
+    let (sent, queued) = a
+        .send_group_text(&group_id, "大家好,这是群消息")
+        .await
+        .unwrap();
     assert_eq!(sent, 1, "B 在线应直发");
     assert_eq!(queued, 0);
 
@@ -155,7 +167,10 @@ async fn group_message_queued_for_offline_member_and_flushed() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // B 离线:群消息应入队
-    let (sent, queued) = a.send_group_text(&group_id, "你不在时的群消息").await.unwrap();
+    let (sent, queued) = a
+        .send_group_text(&group_id, "你不在时的群消息")
+        .await
+        .unwrap();
     assert_eq!(sent, 0);
     assert_eq!(queued, 1, "离线成员应入队");
 
@@ -510,12 +525,18 @@ fn update_script_contains_critical_steps() {
         script.contains("copy /Y \"C:/apps/fq-desktop.exe\" \"C:/apps/fq-desktop.exe.bak\""),
         "应备份旧版本: {script}"
     );
-    assert!(script.contains(":retry") && script.contains("goto retry"), "覆盖失败应重试");
+    assert!(
+        script.contains(":retry") && script.contains("goto retry"),
+        "覆盖失败应重试"
+    );
     assert!(
         script.contains("copy /Y \"C:/dl/fq-desktop.exe\" \"C:/apps/fq-desktop.exe\""),
         "应覆盖自身 exe"
     );
-    assert!(script.contains("start \"\" \"C:/apps/fq-desktop.exe\""), "应重启应用");
+    assert!(
+        script.contains("start \"\" \"C:/apps/fq-desktop.exe\""),
+        "应重启应用"
+    );
     assert!(script.contains("del \"%~f0\""), "应自删脚本");
 }
 
@@ -570,13 +591,17 @@ async fn install_update_rejects_unsafe_packages() {
     let err = app
         .install_update_and_restart(&fake.display().to_string())
         .expect_err("非 PE 内容必须拒绝");
-    assert!(err.to_string().contains("不是有效的可执行文件"), "实际: {err}");
+    assert!(
+        err.to_string().contains("不是有效的可执行文件"),
+        "实际: {err}"
+    );
 
     // 不存在的路径
     let missing = download.join("nope.exe");
-    assert!(app
-        .install_update_and_restart(&missing.display().to_string())
-        .is_err());
+    assert!(
+        app.install_update_and_restart(&missing.display().to_string())
+            .is_err()
+    );
 
     app.shutdown();
 }
@@ -661,7 +686,11 @@ async fn avatar_is_announced_fetched_cached_and_refreshed() {
     std::fs::write(a.avatar_path(), &new_png).unwrap();
     let new_hash = a.reload_avatar().await;
     assert_eq!(a.local_avatar().as_deref(), Some(new_png.as_slice()));
-    assert_eq!(new_hash.as_deref().map(str::len), Some(64), "哈希应为 64 位 hex");
+    assert_eq!(
+        new_hash.as_deref().map(str::len),
+        Some(64),
+        "哈希应为 64 位 hex"
+    );
     let updated = eventually_within(
         || async {
             b.peer_avatar(&a_hex)
@@ -771,7 +800,10 @@ async fn messages_persisted_and_receipts_flow() {
     let (a, b) = start_pair("receipts", (25601, 25602), (25611, 25612)).await;
 
     // A → B
-    let outcome = a.send_text(b.node_id(), "你好,这里是回执测试 🚀").await.unwrap();
+    let outcome = a
+        .send_text(b.node_id(), "你好,这里是回执测试 🚀")
+        .await
+        .unwrap();
     assert!(matches!(outcome, SendOutcome::Sent(_)), "在线时必须直发");
 
     // B 侧入库
@@ -857,7 +889,10 @@ async fn offline_queue_flushed_when_peer_returns() {
 
     // B 离线 → A 的消息进入待发队列
     let outcome = a.send_text(b_id, "你不在时发出的消息").await.unwrap();
-    assert!(matches!(outcome, SendOutcome::Queued(_)), "对端离线必须入队");
+    assert!(
+        matches!(outcome, SendOutcome::Queued(_)),
+        "对端离线必须入队"
+    );
     assert_eq!(a.pending_count().await.unwrap(), 1);
     // 队列中的消息尚未写入历史(发出后才算)
     assert!(a.history(b_id, 10).await.unwrap().is_empty());
@@ -898,11 +933,9 @@ async fn offline_queue_flushed_when_peer_returns() {
     .await;
     eventually(
         || async {
-            a.history(b_id, 10)
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|m| m.body.as_deref() == Some("你不在时发出的消息") && m.delivered_ms.is_some())
+            a.history(b_id, 10).await.unwrap().into_iter().find(|m| {
+                m.body.as_deref() == Some("你不在时发出的消息") && m.delivered_ms.is_some()
+            })
         },
         "补发消息入库且带回执",
     )
@@ -927,9 +960,14 @@ async fn identity_and_history_survive_restart() {
     let a_bootstrap = vec![SocketAddr::from(([127, 0, 0, 1], b_ports.0))];
     let b_bootstrap = vec![SocketAddr::from(([127, 0, 0, 1], a_ports.0))];
 
-    let a = App::start(app_config(a_dir.clone(), "Alice", a_ports, a_bootstrap.clone()))
-        .await
-        .unwrap();
+    let a = App::start(app_config(
+        a_dir.clone(),
+        "Alice",
+        a_ports,
+        a_bootstrap.clone(),
+    ))
+    .await
+    .unwrap();
     let b = App::start(app_config(b_dir, "Bob", b_ports, b_bootstrap.clone()))
         .await
         .unwrap();
@@ -937,7 +975,9 @@ async fn identity_and_history_survive_restart() {
     let (a_id, b_id) = (a.node_id(), b.node_id());
 
     for i in 0..3 {
-        a.send_text(b_id, &format!("重启前的第 {i} 条")).await.unwrap();
+        a.send_text(b_id, &format!("重启前的第 {i} 条"))
+            .await
+            .unwrap();
     }
     eventually(
         || async {

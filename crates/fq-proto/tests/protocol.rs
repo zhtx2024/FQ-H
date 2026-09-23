@@ -22,7 +22,10 @@ fn presence() -> PresenceInfo {
         status: PresenceStatus::Busy,
         group: Some("研发组".to_string()),
         port: 24250,
-        endpoints: vec!["192.168.1.20:24250".to_string(), "[fe80::1]:24250".to_string()],
+        endpoints: vec![
+            "192.168.1.20:24250".to_string(),
+            "[fe80::1]:24250".to_string(),
+        ],
         public_key: vec![0xAB; 32],
         noise_static: vec![0xCD; 32],
         binding_signature: vec![0xEF; 64],
@@ -200,14 +203,18 @@ fn file_chunk_data_uses_binary_encoding_not_int_array() {
 
 #[test]
 fn framed_transport_roundtrip_through_decoder() {
-    let envelope = Envelope::direct(node(9), node(8), Kind::Text(TextBody {
-        body: "跨分帧层的往返".to_string(),
-        format: TextFormat::Plain,
-        reply_to: None,
-        mentions: vec![],
-        group_id: None,
-        group_name: None,
-    }));
+    let envelope = Envelope::direct(
+        node(9),
+        node(8),
+        Kind::Text(TextBody {
+            body: "跨分帧层的往返".to_string(),
+            format: TextFormat::Plain,
+            reply_to: None,
+            mentions: vec![],
+            group_id: None,
+            group_name: None,
+        }),
+    );
 
     let wire = codec::encode_framed(&envelope).unwrap();
 

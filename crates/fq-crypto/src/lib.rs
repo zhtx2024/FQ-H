@@ -62,13 +62,14 @@ pub mod tofu;
 
 pub use binding::{BINDING_CONTEXT, sign_static_key_binding, verify_static_key_binding};
 pub use channel::{
-    HandshakeInitiator, HandshakeResponder, SecureChannel, StaticKeys, NOISE_PATTERN, STATIC_KEY_LEN,
+    HandshakeInitiator, HandshakeResponder, NOISE_PATTERN, STATIC_KEY_LEN, SecureChannel,
+    StaticKeys,
 };
 pub use error::{Error, Result};
 pub use fingerprint::{FINGERPRINT_CONTEXT, static_key_fingerprint};
 pub use identity::{Identity, PUBLIC_KEY_LEN, SIGNATURE_LEN, verify_signature};
 pub use persist::{
-    load_identity, load_or_create_identity, load_or_create_static_keys, load_static_keys, load_tofu,
-    save_identity, save_static_keys, save_tofu,
+    load_identity, load_or_create_identity, load_or_create_static_keys, load_static_keys,
+    load_tofu, save_identity, save_static_keys, save_tofu,
 };
-pub use tofu::{TrustDecision, TofuStore};
+pub use tofu::{TofuStore, TrustDecision};

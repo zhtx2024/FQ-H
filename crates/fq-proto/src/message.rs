@@ -634,7 +634,10 @@ mod tests {
 
     #[test]
     fn string_enums_fall_back_on_unknown_value() {
-        assert_eq!(PresenceStatus::parse("in-a-meeting"), PresenceStatus::Unknown);
+        assert_eq!(
+            PresenceStatus::parse("in-a-meeting"),
+            PresenceStatus::Unknown
+        );
         assert_eq!(PresenceEvent::parse("future-event"), PresenceEvent::Unknown);
         assert_eq!(FileKind::parse("socket"), FileKind::Unknown);
         assert_eq!(AckStatus::parse(""), AckStatus::Unknown);
@@ -642,7 +645,10 @@ mod tests {
 
     #[test]
     fn envelope_carries_protocol_version() {
-        let env = Envelope::broadcast(NodeId::from_bytes([1u8; 16]), Kind::Ping(PingBody { nonce: 7 }));
+        let env = Envelope::broadcast(
+            NodeId::from_bytes([1u8; 16]),
+            Kind::Ping(PingBody { nonce: 7 }),
+        );
         assert_eq!(env.v, PROTOCOL_VERSION);
         assert!(env.is_protocol_compatible());
         assert_eq!(env.kind_name(), "ping");
@@ -650,7 +656,23 @@ mod tests {
 
     #[test]
     fn transient_classification() {
-        assert!(Kind::Typing(TypingBody { state: TypingState::Started, thread: None }).is_transient());
-        assert!(!Kind::Text(TextBody { body: "hi".into(), format: TextFormat::Plain, reply_to: None, mentions: vec![], group_id: None, group_name: None }).is_transient());
+        assert!(
+            Kind::Typing(TypingBody {
+                state: TypingState::Started,
+                thread: None
+            })
+            .is_transient()
+        );
+        assert!(
+            !Kind::Text(TextBody {
+                body: "hi".into(),
+                format: TextFormat::Plain,
+                reply_to: None,
+                mentions: vec![],
+                group_id: None,
+                group_name: None
+            })
+            .is_transient()
+        );
     }
 }

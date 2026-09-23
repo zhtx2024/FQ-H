@@ -91,10 +91,7 @@ fn unknown_message_kind_decodes_as_unknown_instead_of_failing() {
 #[test]
 fn unknown_fields_are_ignored() {
     // 模拟未来版本在同一报文里追加了字段
-    let mut pairs = base_pairs(&[
-        ("kind", mp_str("ping")),
-        ("nonce", mp_u64(7)),
-    ]);
+    let mut pairs = base_pairs(&[("kind", mp_str("ping")), ("nonce", mp_u64(7))]);
     pairs.push(("future_field", mp_str("ignored")));
     pairs.push(("another_new_field", mp_u64(99)));
     let bytes = mp_map(&pairs);
@@ -109,7 +106,10 @@ fn unknown_fields_are_ignored() {
 #[test]
 fn optional_fields_may_be_absent() {
     // 只有必填字段 + kind,省略 to / 以及载荷内的全部可选字段
-    let bytes = mp_map(&base_pairs(&[("kind", mp_str("ping")), ("nonce", mp_u64(1))]));
+    let bytes = mp_map(&base_pairs(&[
+        ("kind", mp_str("ping")),
+        ("nonce", mp_u64(1)),
+    ]));
 
     let envelope = codec::decode(&bytes).expect("可选字段缺失时必须使用默认值");
     assert_eq!(envelope.to, None);
@@ -129,7 +129,11 @@ fn presence_without_optional_fields_falls_back_to_defaults() {
         panic!("期望 Presence");
     };
     assert_eq!(info.display_name, "未来版本用户");
-    assert_eq!(info.status, fq_proto::PresenceStatus::Online, "默认应为在线");
+    assert_eq!(
+        info.status,
+        fq_proto::PresenceStatus::Online,
+        "默认应为在线"
+    );
     assert_eq!(info.capabilities.bits(), 0);
     assert!(info.public_key.is_empty());
 }
@@ -195,4 +199,3 @@ fn nested_kind_map_is_rejected_because_wire_format_must_be_flat() {
         "嵌套 kind 格式必须被拒绝,只接受扁平格式"
     );
 }
-

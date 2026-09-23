@@ -23,7 +23,14 @@ const DEAD_BROADCAST: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 1);
 
 async fn node_named(name: &str, disc_port: u16, tcp_port: u16, bootstrap: Vec<SocketAddr>) -> Node {
-    node_with_identity(name, Identity::generate().unwrap(), disc_port, tcp_port, bootstrap).await
+    node_with_identity(
+        name,
+        Identity::generate().unwrap(),
+        disc_port,
+        tcp_port,
+        bootstrap,
+    )
+    .await
 }
 
 async fn node_with_identity(
@@ -144,14 +151,23 @@ async fn two_nodes_discover_each_other_and_exchange_text() {
     // ── 双向发现 ──
     let peer_b = wait_peer(&a, b.node_id()).await;
     assert_eq!(peer_b.display_name, "Bob");
-    assert!(!peer_b.endpoints.is_empty(), "可达端点必须由 UDP 源地址推导");
+    assert!(
+        !peer_b.endpoints.is_empty(),
+        "可达端点必须由 UDP 源地址推导"
+    );
     let peer_a = wait_peer(&b, a.node_id()).await;
     assert_eq!(peer_a.display_name, "Alice");
-    assert_eq!(peer_a.noise_static, a.static_public(), "对端表必须记录通告里的静态公钥");
+    assert_eq!(
+        peer_a.noise_static,
+        a.static_public(),
+        "对端表必须记录通告里的静态公钥"
+    );
 
     // ── A → B ──
     let mut b_events = b.events();
-    a.send_text(b.node_id(), "你好,飞秋重构版!🚀").await.unwrap();
+    a.send_text(b.node_id(), "你好,飞秋重构版!🚀")
+        .await
+        .unwrap();
     let event = next_event(&mut b_events, |e| {
         matches!(e, NodeEvent::MessageReceived { .. })
     })
@@ -194,7 +210,9 @@ async fn forged_presence_is_ignored() {
     let mut a1 = forged_presence(&impostor, &impostor_static, &real_signature, "冒名顶替");
     // 签名是真实有效的,但把 from 换成受害者
     a1.from = NodeId::from_bytes([0x99; 16]);
-    sock.send_to(&codec::encode_framed(&a1).unwrap(), b_disc).await.unwrap();
+    sock.send_to(&codec::encode_framed(&a1).unwrap(), b_disc)
+        .await
+        .unwrap();
 
     // ── 攻击 A2:NodeId 与公钥一致,但绑定签名签在另一把静态密钥上 ──
     let attacker2 = Identity::generate().unwrap();
@@ -202,7 +220,9 @@ async fn forged_presence_is_ignored() {
     let wrong_key_signature =
         fq_crypto::sign_static_key_binding(&attacker2, &StaticKeys::generate().unwrap().public());
     let a2 = forged_presence(&attacker2, &attacker2_static, &wrong_key_signature, "李四");
-    sock.send_to(&codec::encode_framed(&a2).unwrap(), b_disc).await.unwrap();
+    sock.send_to(&codec::encode_framed(&a2).unwrap(), b_disc)
+        .await
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     let peers = b.peers();

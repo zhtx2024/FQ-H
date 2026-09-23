@@ -18,11 +18,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use fq_crypto::{HandshakeInitiator, HandshakeResponder, SecureChannel, StaticKeys, STATIC_KEY_LEN};
+use fq_crypto::{
+    HandshakeInitiator, HandshakeResponder, STATIC_KEY_LEN, SecureChannel, StaticKeys,
+};
 use fq_proto::{Envelope, FrameDecoder, MAX_FRAME_BYTES, codec};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
@@ -144,12 +146,7 @@ impl Transport {
     }
 
     /// 拆出(读半 + 共享通道)与(写半 + 共享通道),分别交给读/写任务。
-    pub fn into_parts(
-        self,
-    ) -> (
-        ReadPart,
-        WritePart,
-    ) {
+    pub fn into_parts(self) -> (ReadPart, WritePart) {
         let channel = self.channel;
         let remote_static = self.remote_static;
         (

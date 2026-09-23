@@ -1,4 +1,4 @@
-﻿//! 对端表:在线成员的内存视图(发现 → 更新 → 离线)。
+//! 对端表:在线成员的内存视图(发现 → 更新 → 离线)。
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -147,7 +147,11 @@ impl PeerTable {
     /// 全部对端快照(按昵称排序,便于 UI 展示)。
     pub fn list(&self) -> Vec<PeerInfo> {
         let mut peers: Vec<PeerInfo> = self.lock().values().cloned().collect();
-        peers.sort_by(|a, b| a.display_name.cmp(&b.display_name).then(a.node_id.cmp(&b.node_id)));
+        peers.sort_by(|a, b| {
+            a.display_name
+                .cmp(&b.display_name)
+                .then(a.node_id.cmp(&b.node_id))
+        });
         peers
     }
 

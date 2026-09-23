@@ -74,7 +74,8 @@ mod tests {
         let static_public = [0xA5u8; PUBLIC_KEY_LEN];
         let signature = sign_static_key_binding(&identity, &static_public);
 
-        let derived = verify_static_key_binding(&identity.public_key(), &static_public, &signature).unwrap();
+        let derived =
+            verify_static_key_binding(&identity.public_key(), &static_public, &signature).unwrap();
         assert_eq!(derived, identity.node_id());
     }
 
@@ -87,7 +88,8 @@ mod tests {
         // 用真实静态密钥的签名,去验证攻击者的静态密钥 → 必须失败
         let signature = sign_static_key_binding(&identity, &real_static);
         assert!(
-            verify_static_key_binding(&identity.public_key(), &attacker_static, &signature).is_err(),
+            verify_static_key_binding(&identity.public_key(), &attacker_static, &signature)
+                .is_err(),
             "把 A 密钥的绑定签名安到 B 密钥上必须被拒绝"
         );
     }

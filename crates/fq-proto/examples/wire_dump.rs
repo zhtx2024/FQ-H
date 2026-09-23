@@ -11,12 +11,16 @@
 
 use fq_proto::{
     AckBody, AckStatus, Capabilities, Envelope, FileChunk, FileEntry, FileKind, FileManifest,
-    FileOffer, Kind, MsgId, NodeId, PingBody, PresenceEvent, PresenceInfo, PresenceStatus, TextBody,
-    TextFormat, codec,
+    FileOffer, Kind, MsgId, NodeId, PingBody, PresenceEvent, PresenceInfo, PresenceStatus,
+    TextBody, TextFormat, codec,
 };
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// 把 MessagePack 字节里的可打印 ASCII 片段抽取出来,便于快速肉眼核对字段名。

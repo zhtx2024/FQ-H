@@ -54,8 +54,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn decode_fixed_hex(raw: &str, expect_len: usize, what: &str) -> Result<Vec<u8>> {
-    let bytes = hex::decode(raw)
-        .map_err(|e| Error::CorruptedStore(format!("{what} 不是合法 hex: {e}")))?;
+    let bytes =
+        hex::decode(raw).map_err(|e| Error::CorruptedStore(format!("{what} 不是合法 hex: {e}")))?;
     if bytes.len() != expect_len {
         return Err(Error::CorruptedStore(format!(
             "{what} 长度应为 {expect_len} 字节,实际 {}",
@@ -86,7 +86,10 @@ pub fn load_identity(path: &Path) -> Result<Option<Identity>> {
     let file: IdentityFile = serde_json::from_str(&raw)
         .map_err(|e| Error::CorruptedStore(format!("身份文件不是合法 JSON: {e}")))?;
     if file.v != 1 {
-        return Err(Error::CorruptedStore(format!("不支持的身份文件版本 v{}", file.v)));
+        return Err(Error::CorruptedStore(format!(
+            "不支持的身份文件版本 v{}",
+            file.v
+        )));
     }
 
     let seed_bytes = decode_fixed_hex(&file.seed, 32, "身份种子")?;
@@ -200,7 +203,10 @@ pub fn load_tofu(path: &Path) -> Result<TofuStore> {
     let file: TofuFile = serde_json::from_str(&raw)
         .map_err(|e| Error::CorruptedStore(format!("TOFU 文件不是合法 JSON: {e}")))?;
     if file.v != 1 {
-        return Err(Error::CorruptedStore(format!("不支持的 TOFU 文件版本 v{}", file.v)));
+        return Err(Error::CorruptedStore(format!(
+            "不支持的 TOFU 文件版本 v{}",
+            file.v
+        )));
     }
 
     let mut pairs = Vec::with_capacity(file.pins.len());

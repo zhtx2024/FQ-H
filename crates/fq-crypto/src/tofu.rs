@@ -163,10 +163,13 @@ mod tests {
         // 预期旧值正确 → 换绑成功
         store.replace_pin(&node, &key(1), &key(2)).unwrap();
         assert_eq!(store.verify(&node, &key(2)), TrustDecision::Trusted);
-        assert_eq!(store.verify(&node, &key(1)), TrustDecision::Changed {
-            pinned: static_key_fingerprint(&key(2)),
-            presented: static_key_fingerprint(&key(1)),
-        });
+        assert_eq!(
+            store.verify(&node, &key(1)),
+            TrustDecision::Changed {
+                pinned: static_key_fingerprint(&key(2)),
+                presented: static_key_fingerprint(&key(1)),
+            }
+        );
     }
 
     #[test]

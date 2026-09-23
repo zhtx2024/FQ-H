@@ -41,7 +41,12 @@ async fn multi_chunk_file_transfer_with_hash_verification() {
         matches!(e, NodeEvent::FileOfferReceived { .. })
     })
     .await;
-    let NodeEvent::FileOfferReceived { manifest, message, .. } = offer else { unreachable!() };
+    let NodeEvent::FileOfferReceived {
+        manifest, message, ..
+    } = offer
+    else {
+        unreachable!()
+    };
     assert_eq!(message.as_deref(), Some("发你一个文件"));
     assert_eq!(manifest.total_bytes, payload.len() as u64);
     assert_eq!(manifest.entries.len(), 1);
@@ -57,7 +62,12 @@ async fn multi_chunk_file_transfer_with_hash_verification() {
         matches!(e, NodeEvent::FileEntryDone { .. })
     })
     .await;
-    let NodeEvent::FileEntryDone { sha256, verified, .. } = entry else { unreachable!() };
+    let NodeEvent::FileEntryDone {
+        sha256, verified, ..
+    } = entry
+    else {
+        unreachable!()
+    };
     assert!(verified, "接收方 SHA-256 校验必须通过");
     assert_eq!(sha256, sha256_hex(&payload));
 
@@ -124,7 +134,12 @@ async fn update_package_transfer_auto_accepts_and_reports_ready() {
         matches!(e, NodeEvent::UpdateOfferReceived { .. })
     })
     .await;
-    let NodeEvent::UpdateOfferReceived { version, manifest, .. } = offer else { unreachable!() };
+    let NodeEvent::UpdateOfferReceived {
+        version, manifest, ..
+    } = offer
+    else {
+        unreachable!()
+    };
     assert_eq!(version, "9.9.9");
     assert_eq!(manifest.total_bytes, payload.len() as u64);
 
@@ -133,7 +148,13 @@ async fn update_package_transfer_auto_accepts_and_reports_ready() {
         matches!(e, NodeEvent::UpdatePackageReady { .. })
     })
     .await;
-    let NodeEvent::UpdatePackageReady { version, path, token: ready_token, .. } = ready else {
+    let NodeEvent::UpdatePackageReady {
+        version,
+        path,
+        token: ready_token,
+        ..
+    } = ready
+    else {
         unreachable!()
     };
     assert_eq!(ready_token, token);
@@ -156,7 +177,13 @@ async fn update_package_ready_path_reflects_renamed_target() {
     let stale = download.join("feiqiu-r_setup.exe");
     std::fs::write(&stale, b"stale-package-from-an-older-version").unwrap();
 
-    let (a, b) = node_pair("update-dup", (25451, 25452), (25461, 25462), download.clone()).await;
+    let (a, b) = node_pair(
+        "update-dup",
+        (25451, 25452),
+        (25461, 25462),
+        download.clone(),
+    )
+    .await;
     let payload = pseudo_random(200_000, 0x0BAD_F00D);
     let pkg_dir = temp_dir("update-dup-pkg");
     let pkg = pkg_dir.join("feiqiu-r_setup.exe");
@@ -171,7 +198,9 @@ async fn update_package_ready_path_reflects_renamed_target() {
         matches!(e, NodeEvent::UpdatePackageReady { .. })
     })
     .await;
-    let NodeEvent::UpdatePackageReady { version, path, .. } = ready else { unreachable!() };
+    let NodeEvent::UpdatePackageReady { version, path, .. } = ready else {
+        unreachable!()
+    };
     assert_eq!(version, "9.9.10");
 
     let actual = std::path::PathBuf::from(&path);
@@ -197,7 +226,8 @@ async fn transfer_resumes_from_existing_part_file() {
     // 预先放置 .part:正好是源文件的前缀(256 KiB + 1000 字节)
     let payload = pseudo_random(1024 * 1024, 0x7777);
     let prefix_len = 256 * 1024 + 1000;
-    std::fs::write(download.join("断点.bin.part"), &payload[..prefix_len]).expect("预置 .part 失败");
+    std::fs::write(download.join("断点.bin.part"), &payload[..prefix_len])
+        .expect("预置 .part 失败");
 
     let (a, b) = node_pair("resume", (25251, 25252), (25261, 25262), download.clone()).await;
 
@@ -206,14 +236,19 @@ async fn transfer_resumes_from_existing_part_file() {
     std::fs::write(&src, &payload).unwrap();
 
     let mut b_events = b.events();
-    let token = a.send_file(b.node_id(), &src, None).await.expect("发起发送失败");
+    let token = a
+        .send_file(b.node_id(), &src, None)
+        .await
+        .expect("发起发送失败");
 
     // 第一个进度事件应从续传偏移起步(而不是从 0)
     let first_progress = next_event(&mut b_events, |e| {
         matches!(e, NodeEvent::FileProgress { .. })
     })
     .await;
-    let NodeEvent::FileProgress { transferred, .. } = first_progress else { unreachable!() };
+    let NodeEvent::FileProgress { transferred, .. } = first_progress else {
+        unreachable!()
+    };
     assert!(
         transferred >= prefix_len as u64,
         "续传必须从已有 {prefix_len} 字节起步,实际从 {transferred} 开始"
@@ -235,7 +270,11 @@ async fn transfer_resumes_from_existing_part_file() {
 async fn existing_file_is_never_overwritten() {
     let download = temp_dir("collide-recv");
     // 已存在的同名文件:绝不能被覆盖
-    std::fs::write(download.join("重要数据.txt"), "原有内容,不可破坏".as_bytes()).unwrap();
+    std::fs::write(
+        download.join("重要数据.txt"),
+        "原有内容,不可破坏".as_bytes(),
+    )
+    .unwrap();
 
     let (a, b) = node_pair("collide", (25271, 25272), (25281, 25282), download.clone()).await;
 
@@ -244,7 +283,10 @@ async fn existing_file_is_never_overwritten() {
     std::fs::write(&src, "新内容".as_bytes()).unwrap();
 
     let mut b_events = b.events();
-    let token = a.send_file(b.node_id(), &src, None).await.expect("发起发送失败");
+    let token = a
+        .send_file(b.node_id(), &src, None)
+        .await
+        .expect("发起发送失败");
     next_event(&mut b_events, is_receiving_completed(&token)).await;
 
     // 原文件原封不动,新文件换名保存
@@ -274,7 +316,10 @@ async fn oversize_stale_part_is_restarted_from_zero() {
     std::fs::write(&src, &payload).unwrap();
 
     let mut b_events = b.events();
-    let token = a.send_file(b.node_id(), &src, None).await.expect("发起发送失败");
+    let token = a
+        .send_file(b.node_id(), &src, None)
+        .await
+        .expect("发起发送失败");
     next_event(&mut b_events, is_receiving_completed(&token)).await;
 
     assert_eq!(std::fs::read(download.join("陈旧.bin")).unwrap(), payload);

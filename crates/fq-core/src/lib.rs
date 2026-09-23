@@ -50,7 +50,8 @@ pub use error::{Error, Result};
 pub enum AppEvent {
     /// 网络层事件透传(进度/信任告警/对端上下线等)。
     /// 装箱:NodeEvent 含清单等大字段,避免拉大其余变体的体积。
-    Node(Box<NodeEvent>),    /// 一条消息已写入历史(收到的或发出的)。
+    Node(Box<NodeEvent>),
+    /// 一条消息已写入历史(收到的或发出的)。
     MessageSaved {
         /// 会话对方。
         peer: NodeId,
@@ -225,10 +226,8 @@ impl App {
         let avatar_path = config.data_dir.join("avatar.png");
         let avatar_sha256 = read_avatar(Some(&avatar_path)).map(|(hash, _)| hash);
 
-        let mut node_config = fq_net::NodeConfig::new(
-            identity.clone(),
-            static_keys,            &config.display_name,
-        );
+        let mut node_config =
+            fq_net::NodeConfig::new(identity.clone(), static_keys, &config.display_name);
         node_config.group = config.group.clone();
         node_config.discovery_bind = SocketAddr::new(config.bind, config.discovery_port);
         node_config.listen_addr = SocketAddr::new(config.bind, config.listen_port);
@@ -239,8 +238,9 @@ impl App {
         node_config.heartbeat_every = config.heartbeat_every;
         node_config.peer_timeout = config.peer_timeout;
         node_config.tofu = tofu;
-        node_config.download_dir =
-            config.download_dir.unwrap_or_else(|| config.data_dir.join("downloads"));
+        node_config.download_dir = config
+            .download_dir
+            .unwrap_or_else(|| config.data_dir.join("downloads"));
         node_config.auto_accept_files = config.auto_accept_files;
         node_config.app_version = config.app_version.clone();
         node_config.avatar_sha256 = avatar_sha256;
@@ -336,12 +336,7 @@ impl App {
                 self.store
                     .lock()
                     .await
-                    .enqueue(
-                        &id.to_string(),
-                        &to.to_hex(),
-                        &blob,
-                        now_ms(),
-                    )
+                    .enqueue(&id.to_string(), &to.to_hex(), &blob, now_ms())
                     .map_err(Error::Store)?;
                 Ok(SendOutcome::Queued(id))
             }
@@ -416,9 +411,7 @@ impl App {
         let mut sent = 0;
         for peer in self.handle.peers() {
             if peer.status == fq_proto::PresenceStatus::Offline
-                || !peer
-                    .capabilities
-                    .contains(fq_proto::Capabilities::AVATAR)
+                || !peer.capabilities.contains(fq_proto::Capabilities::AVATAR)
             {
                 continue;
             }
@@ -528,10 +521,8 @@ impl App {
 
         #[cfg(target_os = "windows")]
         {
-            let script_path = std::env::temp_dir().join(format!(
-                "fq-update-{}.cmd",
-                MsgId::now_v7()
-            ));
+            let script_path =
+                std::env::temp_dir().join(format!("fq-update-{}.cmd", MsgId::now_v7()));
             let script = build_update_script(&package_real, &current_exe);
             std::fs::write(&script_path, script)
                 .map_err(|e| Error::Start(format!("写入更新脚本失败: {e}")))?;
@@ -564,7 +555,11 @@ impl App {
 
     /// 清空传输历史(不影响进行中的传输)。
     pub async fn clear_transfer_history(&self) -> Result<usize> {
-        self.store.lock().await.clear_transfers().map_err(Error::Store)
+        self.store
+            .lock()
+            .await
+            .clear_transfers()
+            .map_err(Error::Store)
     }
 
     /// 删除单条传输历史。
@@ -598,18 +593,14 @@ impl App {
             .map_err(Error::Net)?;
 
         // 传输历史:记录开始(结束由事件泵更新)
-        let _ = self
-            .store
-            .lock()
-            .await
-            .record_transfer_start(
-                &token,
-                &to.to_hex(),
-                "send",
-                &file_name,
-                file_size,
-                now_ms(),
-            );
+        let _ = self.store.lock().await.record_transfer_start(
+            &token,
+            &to.to_hex(),
+            "send",
+            &file_name,
+            file_size,
+            now_ms(),
+        );
 
         // 插入聊天历史(文件条目)
         let body = serde_json::json!({
@@ -703,7 +694,8 @@ impl App {
     /// 发送群消息:逐成员扇出(离线成员入各自待发队列),并落一条群历史。
     ///
     /// 返回 `(成功直发数, 入队数)`。
-    pub async fn send_group_text(&self, group_id: &str, body: &str) -> Result<(usize, usize)> {        let group = self
+    pub async fn send_group_text(&self, group_id: &str, body: &str) -> Result<(usize, usize)> {
+        let group = self
             .store
             .lock()
             .await
@@ -734,16 +726,12 @@ impl App {
                 Err(_) => {
                     // 离线成员:消息按成员入队,群上下文随 envelope 一起保留
                     if let Ok(blob) = codec::encode(&envelope) {
-                        let _ = self
-                            .store
-                            .lock()
-                            .await
-                            .enqueue(
-                                &envelope.id.to_string(),
-                                member_hex,
-                                &blob,
-                                now_ms(),
-                            );
+                        let _ = self.store.lock().await.enqueue(
+                            &envelope.id.to_string(),
+                            member_hex,
+                            &blob,
+                            now_ms(),
+                        );
                         queued += 1;
                     }
                 }
@@ -811,26 +799,23 @@ impl App {
                 .await
             {
                 Ok(token) => {
-                    let _ = self
-                        .store
-                        .lock()
-                        .await
-                        .record_transfer_start(
-                            &token,
-                            &group.id,
-                            "send",
-                            &file_name,
-                            size,
-                            now_ms(),
-                        );
+                    let _ = self.store.lock().await.record_transfer_start(
+                        &token,
+                        &group.id,
+                        "send",
+                        &file_name,
+                        size,
+                        now_ms(),
+                    );
                     tokens.push(token);
                 }
                 Err(e) => last_error = Some(Error::Net(e)),
             }
         }
         if tokens.is_empty() {
-            return Err(last_error
-                .unwrap_or_else(|| Error::Start("群成员均不可达,文件未能发出".into())));
+            return Err(
+                last_error.unwrap_or_else(|| Error::Start("群成员均不可达,文件未能发出".into()))
+            );
         }
 
         // 群历史:一条文件/图片消息(与单聊共用同一种 JSON body 约定)
@@ -1092,7 +1077,11 @@ impl App {
             id: MsgId::now_v7().to_string(),
             peer: peer.to_hex(),
             is_outgoing: outgoing,
-            from_node: if outgoing { self.node_id().to_hex() } else { peer.to_hex() },
+            from_node: if outgoing {
+                self.node_id().to_hex()
+            } else {
+                peer.to_hex()
+            },
             kind: if is_img { "image" } else { "file" }.into(),
             body: Some(body.to_string()),
             format: None,
@@ -1225,11 +1214,8 @@ async fn event_pump(
                                         .group_name
                                         .clone()
                                         .unwrap_or_else(|| "局域网群聊".to_string());
-                                    let _ = guard.create_group(
-                                        group_id,
-                                        &group_name,
-                                        &[from.to_hex()],
-                                    );
+                                    let _ =
+                                        guard.create_group(group_id, &group_name, &[from.to_hex()]);
                                 }
                             }
                             group_id.clone()
@@ -1391,17 +1377,14 @@ async fn event_pump(
                                     tokio::spawn(async move {
                                         match handle.send_update_package(to, exe, local).await {
                                             Ok(token) => {
-                                                let _ = store
-                                                    .lock()
-                                                    .await
-                                                    .record_transfer_start(
-                                                        &token,
-                                                        &to.to_hex(),
-                                                        "send",
-                                                        &file_name,
-                                                        file_size,
-                                                        now_ms(),
-                                                    );
+                                                let _ = store.lock().await.record_transfer_start(
+                                                    &token,
+                                                    &to.to_hex(),
+                                                    "send",
+                                                    &file_name,
+                                                    file_size,
+                                                    now_ms(),
+                                                );
                                             }
                                             Err(e) => {
                                                 tracing::warn!(target = "fq_core", %e, "发送更新包失败");
@@ -1410,11 +1393,17 @@ async fn event_pump(
                                     });
                                 }
                                 None => {
-                                    tracing::warn!(target = "fq_core", "无法定位本机可执行文件,无法提供更新包");
+                                    tracing::warn!(
+                                        target = "fq_core",
+                                        "无法定位本机可执行文件,无法提供更新包"
+                                    );
                                 }
                             }
                         } else {
-                            tracing::debug!(target = "fq_core", "收到更新请求但本机版本不更高,忽略");
+                            tracing::debug!(
+                                target = "fq_core",
+                                "收到更新请求但本机版本不更高,忽略"
+                            );
                         }
                     }
                     Kind::Ack(ack) => {
@@ -1425,9 +1414,7 @@ async fn event_pump(
                             _ => (None, None),
                         };
                         let id = ack.ack_id.to_string();
-                        if let Err(e) =
-                            store.lock().await.update_ack(&id, delivered, read)
-                        {
+                        if let Err(e) = store.lock().await.update_ack(&id, delivered, read) {
                             tracing::warn!(target = "fq_core", %e, "回执更新失败");
                         }
                         // 送达回执 = 待发队列的出队依据(连接中途死亡不会误出队)
@@ -1438,7 +1425,10 @@ async fn event_pump(
                     _ => {}
                 }
             }
-            NodeEvent::PeerDiscovered { peer, first_contact } => {
+            NodeEvent::PeerDiscovered {
+                peer,
+                first_contact,
+            } => {
                 // 首次接触:把 TOFU 固定表回写磁盘(跨重启锁定密钥)
                 if *first_contact {
                     let snapshot = handle.tofu_snapshot();
@@ -1452,7 +1442,12 @@ async fn event_pump(
                 on_peer_seen(&handle, &store, peer, &out).await;
             }
             // ── 传输历史落库(开始/结束)──
-            NodeEvent::UpdateOfferReceived { from, token, version, manifest } => {
+            NodeEvent::UpdateOfferReceived {
+                from,
+                token,
+                version,
+                manifest,
+            } => {
                 let name = manifest
                     .entries
                     .first()
@@ -1478,7 +1473,12 @@ async fn event_pump(
                     tracing::warn!(target = "fq_core", %e, "传输历史记录失败");
                 }
             }
-            NodeEvent::FileOfferReceived { from, token, manifest, .. } => {
+            NodeEvent::FileOfferReceived {
+                from,
+                token,
+                manifest,
+                ..
+            } => {
                 let name = manifest
                     .entries
                     .first()
@@ -1501,7 +1501,12 @@ async fn event_pump(
                     .await
                     .record_transfer_finish(token, "done", None, now_ms());
             }
-            NodeEvent::UpdatePackageReady { from, version, path, .. } => {
+            NodeEvent::UpdatePackageReady {
+                from,
+                version,
+                path,
+                ..
+            } => {
                 // 更新包已下载并校验通过:通知 UI 走安装流程
                 tracing::info!(target = "fq_core", %version, %path, "更新包就绪");
                 let _ = out.send(AppEvent::UpdateReady {
@@ -1516,10 +1521,12 @@ async fn event_pump(
                 } else {
                     "failed"
                 };
-                let _ = store
-                    .lock()
-                    .await
-                    .record_transfer_finish(token, status, Some(reason), now_ms());
+                let _ = store.lock().await.record_transfer_finish(
+                    token,
+                    status,
+                    Some(reason),
+                    now_ms(),
+                );
             }
             _ => {}
         }
@@ -1549,14 +1556,16 @@ pub fn compare_versions(a: &str, b: &str) -> i32 {
 }
 
 /// 判断文件名是否为常见图片扩展名。
-fn is_image_extension(name: &str) -> bool {    let lower = name.to_lowercase();
-    [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg", ".tiff"]
-        .iter()
-        .any(|ext| lower.ends_with(ext))
+fn is_image_extension(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg", ".tiff",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
 }
 
-
-    /// 对端出现(发现/更新):入库 + 上线时冲洗待发队列。
+/// 对端出现(发现/更新):入库 + 上线时冲洗待发队列。
 /// 隐藏(已删除)的联系人跳过,不再入库/上屏。
 /// 由对端快照构造联系人记录(入库用)。
 fn peer_record(peer: &fq_net::PeerInfo) -> PeerRecord {
@@ -1699,10 +1708,7 @@ async fn retry_avatars(
         let known_hash = cached.get(&key).cloned();
         // 顺带捎上自己的头像:一次往返双向同步,避免对端也来拨号(互拨会 RST 在途报文)
         let mine = local_avatar_payload(avatar_path);
-        if let Err(e) = handle
-            .request_avatar(peer.node_id, known_hash, mine)
-            .await
-        {
+        if let Err(e) = handle.request_avatar(peer.node_id, known_hash, mine).await {
             tracing::debug!(target = "fq_core", %e, "头像重试索取失败");
         }
     }
@@ -1795,7 +1801,10 @@ async fn flush_pending(
         }
     }
     if sent > 0 {
-        let _ = out.send(AppEvent::QueueFlushed { to: peer, count: sent });
+        let _ = out.send(AppEvent::QueueFlushed {
+            to: peer,
+            count: sent,
+        });
     }
 }
 

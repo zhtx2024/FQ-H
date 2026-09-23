@@ -112,7 +112,8 @@ pub struct GroupRecord {
 
 /// 一条联系人记录。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerRecord {    /// NodeId hex。
+pub struct PeerRecord {
+    /// NodeId hex。
     pub node_id: String,
     /// 展示名。
     pub display_name: String,
@@ -341,9 +342,9 @@ impl Store {
 
     /// 读取对端头像(哈希 + MIME + 原始字节)。
     pub fn peer_avatar(&self, node_id: &str) -> Result<Option<(String, String, Vec<u8>)>> {
-        let mut statement = self.conn.prepare(
-            "SELECT sha256, mime, data FROM peer_avatars WHERE node_id = ?1",
-        )?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT sha256, mime, data FROM peer_avatars WHERE node_id = ?1")?;
         let row = statement
             .query_row(params![node_id], |row| {
                 Ok((
@@ -358,9 +359,9 @@ impl Store {
 
     /// 对端头像的哈希(判断是否需要重新拉取)。
     pub fn peer_avatar_hash(&self, node_id: &str) -> Result<Option<String>> {
-        let mut statement =
-            self.conn
-                .prepare("SELECT sha256 FROM peer_avatars WHERE node_id = ?1")?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT sha256 FROM peer_avatars WHERE node_id = ?1")?;
         let row = statement
             .query_row(params![node_id], |row| row.get::<_, String>(0))
             .optional()?;
@@ -384,7 +385,10 @@ impl Store {
     pub fn delete_peer_avatar(&self, node_id: &str) -> Result<bool> {
         let n = self
             .conn
-            .execute("DELETE FROM peer_avatars WHERE node_id = ?1", params![node_id])
+            .execute(
+                "DELETE FROM peer_avatars WHERE node_id = ?1",
+                params![node_id],
+            )
             .map_err(Error::Sqlite)?;
         Ok(n > 0)
     }
@@ -651,7 +655,9 @@ impl Store {
     pub fn pending_count(&self) -> Result<usize> {
         let count: i64 =
             self.conn
-                .query_row("SELECT COUNT(*) FROM pending_messages", [], |row| row.get(0))?;
+                .query_row("SELECT COUNT(*) FROM pending_messages", [], |row| {
+                    row.get(0)
+                })?;
         Ok(count as usize)
     }
 
@@ -765,9 +771,9 @@ impl Store {
 
     /// 列出全部群组。
     pub fn list_groups(&self) -> Result<Vec<GroupRecord>> {
-        let mut statement = self.conn.prepare(
-            "SELECT id, name, members, created_ms FROM groups ORDER BY created_ms",
-        )?;
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, name, members, created_ms FROM groups ORDER BY created_ms")?;
         let rows = statement
             .query_map([], |row| {
                 let members_raw: String = row.get(2)?;
@@ -915,7 +921,11 @@ mod tests {
             id: id.to_string(),
             peer: peer.to_string(),
             is_outgoing: outgoing,
-            from_node: if outgoing { "me".into() } else { peer.to_string() },
+            from_node: if outgoing {
+                "me".into()
+            } else {
+                peer.to_string()
+            },
             kind: "text".into(),
             body: Some(body.to_string()),
             format: Some("plain".into()),
@@ -929,7 +939,13 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         for i in 0..10 {
             store
-                .insert_message(&message(&format!("m{i}"), "peer-a", i % 2 == 0, 1000 + i, "hi"))
+                .insert_message(&message(
+                    &format!("m{i}"),
+                    "peer-a",
+                    i % 2 == 0,
+                    1000 + i,
+                    "hi",
+                ))
                 .unwrap();
         }
         let tail = store.history("peer-a", 3).unwrap();
@@ -980,15 +996,26 @@ mod tests {
             .unwrap();
         assert_eq!(store.list_conversations().unwrap().len(), 1);
         assert!(store.delete_conversation("node-a").unwrap());
-        assert!(store.list_conversations().unwrap().is_empty(), "会话应被移除");
-        assert_eq!(store.history("node-a", 10).unwrap().len(), 1, "历史消息必须保留");
+        assert!(
+            store.list_conversations().unwrap().is_empty(),
+            "会话应被移除"
+        );
+        assert_eq!(
+            store.history("node-a", 10).unwrap().len(),
+            1,
+            "历史消息必须保留"
+        );
         // 重复删除返回 false
         assert!(!store.delete_conversation("node-a").unwrap());
         // 新消息到达后会重新出现(微信语义)
         store
             .insert_message(&message("m2", "node-a", false, 200, "在吗"))
             .unwrap();
-        assert_eq!(store.list_conversations().unwrap().len(), 1, "新消息应重建会话");
+        assert_eq!(
+            store.list_conversations().unwrap().len(),
+            1,
+            "新消息应重建会话"
+        );
     }
 
     #[test]
@@ -1003,7 +1030,9 @@ mod tests {
     #[test]
     fn ack_updates_only_filled_fields() {
         let store = Store::open_in_memory().unwrap();
-        store.insert_message(&message("m1", "p", true, 1, "x")).unwrap();
+        store
+            .insert_message(&message("m1", "p", true, 1, "x"))
+            .unwrap();
 
         assert!(store.update_ack("m1", Some(111), None).unwrap());
         let msg = &store.history("p", 1).unwrap()[0];
@@ -1124,7 +1153,11 @@ mod tests {
         let left = store.list_peers().unwrap();
         assert_eq!(left.len(), 1, "删除后列表里没有它");
         assert_eq!(left[0].node_id, "d2");
-        assert_eq!(store.history("d1", 10).unwrap().len(), 1, "聊天记录必须保留");
+        assert_eq!(
+            store.history("d1", 10).unwrap().len(),
+            1,
+            "聊天记录必须保留"
+        );
         assert!(!store.delete_peer("d1").unwrap(), "重复删除返回 false");
 
         // 飞秋语义:局域网里再发现到就重新入库上屏
@@ -1135,9 +1168,15 @@ mod tests {
     #[test]
     fn search_messages_matches_across_conversations() {
         let store = Store::open_in_memory().unwrap();
-        store.insert_message(&message("s1", "peer-a", true, 100, "项目进度汇报")).unwrap();
-        store.insert_message(&message("s2", "peer-b", false, 200, "收到,项目明天交付")).unwrap();
-        store.insert_message(&message("s3", "peer-a", true, 300, "无关消息")).unwrap();
+        store
+            .insert_message(&message("s1", "peer-a", true, 100, "项目进度汇报"))
+            .unwrap();
+        store
+            .insert_message(&message("s2", "peer-b", false, 200, "收到,项目明天交付"))
+            .unwrap();
+        store
+            .insert_message(&message("s3", "peer-a", true, 300, "无关消息"))
+            .unwrap();
 
         // 跨会话命中,按时间倒序
         let hits = store.search_messages("项目", 50).unwrap();
@@ -1152,8 +1191,12 @@ mod tests {
     #[test]
     fn search_escapes_like_wildcards() {
         let store = Store::open_in_memory().unwrap();
-        store.insert_message(&message("p1", "peer", true, 1, "完成度100%")).unwrap();
-        store.insert_message(&message("p2", "peer", true, 2, "普通消息")).unwrap();
+        store
+            .insert_message(&message("p1", "peer", true, 1, "完成度100%"))
+            .unwrap();
+        store
+            .insert_message(&message("p2", "peer", true, 2, "普通消息"))
+            .unwrap();
 
         // % 应作为字面量匹配,而不是通配符
         let hits = store.search_messages("100%", 50).unwrap();
@@ -1170,9 +1213,15 @@ mod tests {
     fn conversations_track_preview_and_unread() {
         let store = Store::open_in_memory().unwrap();
         // 收到 2 条(未读 +1),发出 1 条(不加未读)
-        store.insert_message(&message("c1", "peer-a", false, 100, "第一条")).unwrap();
-        store.insert_message(&message("c2", "peer-a", false, 200, "第二条")).unwrap();
-        store.insert_message(&message("c3", "peer-a", true, 300, "我回的")).unwrap();
+        store
+            .insert_message(&message("c1", "peer-a", false, 100, "第一条"))
+            .unwrap();
+        store
+            .insert_message(&message("c2", "peer-a", false, 200, "第二条"))
+            .unwrap();
+        store
+            .insert_message(&message("c3", "peer-a", true, 300, "我回的"))
+            .unwrap();
 
         let convs = store.list_conversations().unwrap();
         assert_eq!(convs.len(), 1);
@@ -1183,7 +1232,9 @@ mod tests {
         assert_eq!(conv.last_msg_ms, 300);
 
         // 重复插入不重复累计未读
-        store.insert_message(&message("c1", "peer-a", false, 100, "第一条")).unwrap();
+        store
+            .insert_message(&message("c1", "peer-a", false, 100, "第一条"))
+            .unwrap();
         assert_eq!(store.list_conversations().unwrap()[0].unread, 2);
 
         // 标记已读
@@ -1225,7 +1276,10 @@ mod tests {
         );
         // 最早一页
         let first = store.history_before("p", 102, 3).unwrap();
-        assert_eq!(first.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m0", "m1"]);
+        assert_eq!(
+            first.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["m0", "m1"]
+        );
     }
 
     #[test]
@@ -1246,7 +1300,10 @@ mod tests {
         // 重新打开应逐级迁移到最新版本(含 v2 建表 → v7 删除 hidden_peers)
         let store = Store::open(&path).unwrap();
         assert_eq!(
-            store.conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(),
+            store
+                .conn
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
             SCHEMA_VERSION,
             "应迁移到最新版本"
         );

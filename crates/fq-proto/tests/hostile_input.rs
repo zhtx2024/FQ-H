@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fq_proto::{
-    Envelope, FrameDecoder, Kind, NodeId, PingBody, TextBody, TextFormat, codec, MAX_FRAME_BYTES,
+    Envelope, FrameDecoder, Kind, MAX_FRAME_BYTES, NodeId, PingBody, TextBody, TextFormat, codec,
 };
 
 /// xorshift64:确定性、无依赖,失败可复现。
@@ -61,10 +61,7 @@ fn random_bytes_never_decode_successfully_but_never_panic() {
         }
     }
 
-    assert_eq!(
-        successes, 0,
-        "随机字节不应被解析为合法报文(说明校验过松)"
-    );
+    assert_eq!(successes, 0, "随机字节不应被解析为合法报文(说明校验过松)");
 }
 
 #[test]
@@ -162,10 +159,7 @@ fn frame_decoder_survives_random_streams() {
             continue;
         }
         while let Ok(Some(frame)) = decoder.next_frame() {
-            assert!(
-                frame.len() <= MAX_FRAME_BYTES,
-                "分帧器返回了超过上限的帧"
-            );
+            assert!(frame.len() <= MAX_FRAME_BYTES, "分帧器返回了超过上限的帧");
             let _ = codec::decode(&frame);
         }
     }
@@ -211,7 +205,11 @@ fn utf8_strings_roundtrip_precisely() {
 #[test]
 fn ping_nonce_extremes_roundtrip() {
     for nonce in [0u64, 1, u64::MAX, u64::MAX / 2] {
-        let envelope = Envelope::broadcast(NodeId::from_bytes([3; 16]), Kind::Ping(PingBody { nonce }));
-        assert_eq!(codec::decode(&codec::encode(&envelope).unwrap()).unwrap(), envelope);
+        let envelope =
+            Envelope::broadcast(NodeId::from_bytes([3; 16]), Kind::Ping(PingBody { nonce }));
+        assert_eq!(
+            codec::decode(&codec::encode(&envelope).unwrap()).unwrap(),
+            envelope
+        );
     }
 }

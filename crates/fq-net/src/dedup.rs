@@ -49,7 +49,8 @@ impl DedupWindow {
 
     /// 清理过期条目。
     pub fn prune(&mut self, now: Instant) {
-        self.seen.retain(|_, seen_at| now.duration_since(*seen_at) < self.ttl);
+        self.seen
+            .retain(|_, seen_at| now.duration_since(*seen_at) < self.ttl);
     }
 
     /// 当前缓存量。

@@ -56,7 +56,10 @@ fn suppress_connreset(socket: &Socket) {
         )
     };
     if result != 0 {
-        tracing::warn!(target = "fq_net::discovery", "SIO_UDP_CONNRESET 设置失败,接收循环可能受错误风暴干扰");
+        tracing::warn!(
+            target = "fq_net::discovery",
+            "SIO_UDP_CONNRESET 设置失败,接收循环可能受错误风暴干扰"
+        );
     }
 }
 
@@ -137,7 +140,11 @@ impl DiscoveryEndpoint {
         broadcast: SocketAddr,
         bootstrap: Vec<SocketAddr>,
     ) -> std::io::Result<Self> {
-        let domain = if bind.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+        let domain = if bind.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        };
         let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_reuse_address(true)?;
         socket.set_broadcast(true)?;
@@ -237,10 +244,11 @@ mod tests {
             b.announce(payload).await;
 
             let mut buf = [0u8; 1500];
-            let (size, source) = tokio::time::timeout(std::time::Duration::from_secs(2), a.recv_from(&mut buf))
-                .await
-                .expect("超时")
-                .unwrap();
+            let (size, source) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), a.recv_from(&mut buf))
+                    .await
+                    .expect("超时")
+                    .unwrap();
             assert_eq!(&buf[..size], payload);
             assert_eq!(source, b.local_addr().unwrap());
         });

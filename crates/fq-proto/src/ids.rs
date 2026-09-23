@@ -49,9 +49,9 @@ impl NodeId {
     /// 解析 32 字符 hex。
     pub fn from_hex(raw: &str) -> Result<Self> {
         let bytes = hex::decode(raw).map_err(|e| Error::InvalidNodeId(format!("{raw:?}: {e}")))?;
-        let arr: [u8; Self::LEN] = bytes
-            .try_into()
-            .map_err(|v: Vec<u8>| Error::InvalidNodeId(format!("长度应为 16 字节,实际 {}", v.len())))?;
+        let arr: [u8; Self::LEN] = bytes.try_into().map_err(|v: Vec<u8>| {
+            Error::InvalidNodeId(format!("长度应为 16 字节,实际 {}", v.len()))
+        })?;
         Ok(Self(arr))
     }
 }
@@ -91,9 +91,9 @@ impl<'de> Deserialize<'de> for NodeId {
             }
 
             fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> std::result::Result<NodeId, E> {
-                let arr: [u8; NodeId::LEN] = v.try_into().map_err(|_| {
-                    E::custom(format!("NodeId 字节长度应为 16,实际 {}", v.len()))
-                })?;
+                let arr: [u8; NodeId::LEN] = v
+                    .try_into()
+                    .map_err(|_| E::custom(format!("NodeId 字节长度应为 16,实际 {}", v.len())))?;
                 Ok(NodeId(arr))
             }
 
@@ -103,9 +103,9 @@ impl<'de> Deserialize<'de> for NodeId {
             ) -> std::result::Result<NodeId, A::Error> {
                 let mut arr = [0u8; NodeId::LEN];
                 for (i, slot) in arr.iter_mut().enumerate() {
-                    *slot = seq
-                        .next_element::<u8>()?
-                        .ok_or_else(|| serde::de::Error::custom(format!("NodeId 数组在索引 {i} 处提前结束")))?;
+                    *slot = seq.next_element::<u8>()?.ok_or_else(|| {
+                        serde::de::Error::custom(format!("NodeId 数组在索引 {i} 处提前结束"))
+                    })?;
                 }
                 Ok(NodeId(arr))
             }
@@ -137,7 +137,9 @@ impl MsgId {
 
     /// 该消息 ID 内嵌的毫秒时间戳(UUIDv7 特性,可用于延迟观测)。
     pub fn timestamp_ms(self) -> Option<u64> {
-        self.0.get_timestamp().map(|ts| ts.to_unix().0 * 1000 + u64::from(ts.to_unix().1) / 1_000_000)
+        self.0
+            .get_timestamp()
+            .map(|ts| ts.to_unix().0 * 1000 + u64::from(ts.to_unix().1) / 1_000_000)
     }
 
     /// 解析字符串形式的消息 ID(历史库反查用)。

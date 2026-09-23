@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fq_crypto::{
-    Identity, StaticKeys, TofuStore, TrustDecision, verify_static_key_binding, STATIC_KEY_LEN,
+    Identity, STATIC_KEY_LEN, StaticKeys, TofuStore, TrustDecision, verify_static_key_binding,
 };
 use fq_proto::{
     Capabilities, Envelope, FrameDecoder, Kind, MsgId, NodeId, PresenceEvent, PresenceInfo,
@@ -380,9 +380,7 @@ impl Node {
             bootstrap,
         )?);
         let listener = TcpListener::bind(listen_addr).await?;
-        let listen_port = listener
-            .local_addr()?
-            .port();
+        let listen_port = listener.local_addr()?.port();
 
         let (events, _unused) = broadcast::channel(EVENT_CAPACITY);
         let shared = Arc::new(Shared {
@@ -401,10 +399,7 @@ impl Node {
             tofu: Arc::new(Mutex::new(tofu)),
             conns: Mutex::new(HashMap::new()),
             dialing: Mutex::new(HashSet::new()),
-            dedup: Mutex::new(DedupWindow::new(
-                Duration::from_secs(300),
-                4096,
-            )),
+            dedup: Mutex::new(DedupWindow::new(Duration::from_secs(300), 4096)),
             events,
             discovery,
             transfers: transfer::TransferManager::new(),
@@ -501,10 +496,7 @@ impl NodeHandle {
         let envelope = Envelope::direct(
             self.shared.self_id,
             to,
-            Kind::AvatarRequest(crate::AvatarRequest {
-                known_sha256,
-                mine,
-            }),
+            Kind::AvatarRequest(crate::AvatarRequest { known_sha256, mine }),
         );
         self.shared.send_direct(envelope).await
     }
@@ -589,7 +581,11 @@ impl NodeHandle {
 
     /// 更新自己的在线状态并立即通告。
     pub async fn set_status(&self, status: PresenceStatus) {
-        self.shared.profile.lock().unwrap_or_else(|p| p.into_inner()).status = status;
+        self.shared
+            .profile
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .status = status;
         if let Ok(bytes) = self.shared.build_announce(PresenceEvent::Update) {
             self.shared.discovery.announce(&bytes).await;
         }
@@ -598,7 +594,11 @@ impl NodeHandle {
     /// 更新自己的昵称与分组并立即通告(对方会收到 `[PEER] 上线/更新`)。
     pub async fn set_profile(&self, display_name: &str, group: Option<&str>) {
         {
-            let mut profile = self.shared.profile.lock().unwrap_or_else(|p| p.into_inner());
+            let mut profile = self
+                .shared
+                .profile
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if !display_name.trim().is_empty() {
                 profile.display_name = display_name.trim().to_string();
             }
@@ -614,7 +614,11 @@ impl NodeHandle {
 
     /// 当前自己的昵称与分组副本。
     pub fn profile_snapshot(&self) -> (String, Option<String>) {
-        let profile = self.shared.profile.lock().unwrap_or_else(|p| p.into_inner());
+        let profile = self
+            .shared
+            .profile
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         (profile.display_name.clone(), profile.group.clone())
     }
 
@@ -694,7 +698,9 @@ impl NodeHandle {
 
     /// 主动断开与某对端的连接(测试/管理用;之后发送会自动重连)。
     pub fn disconnect(&self, node_id: &NodeId) {
-        if let Some(handle) = self.shared.conns
+        if let Some(handle) = self
+            .shared
+            .conns
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(node_id)
@@ -757,7 +763,8 @@ impl Shared {
     async fn ensure_connection(self: &Arc<Self>, to: NodeId) -> Result<mpsc::Sender<Envelope>> {
         let deadline = tokio::time::Instant::now() + DIAL_WAIT;
         loop {
-            if let Some(handle) = self.conns
+            if let Some(handle) = self
+                .conns
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .get(&to)
@@ -766,7 +773,8 @@ impl Shared {
             }
 
             // 抢拨号权;抢不到就等别人拨完
-            let acquired = self.dialing
+            let acquired = self
+                .dialing
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .insert(to);
@@ -789,15 +797,14 @@ impl Shared {
 
     /// 对目标对端逐端点拨号,成功后建立读写任务并入表。
     async fn dial(self: &Arc<Self>, to: NodeId) -> Result<mpsc::Sender<Envelope>> {
-        let peer = self.peers.get(&to).ok_or_else(|| {
-            Error::PeerUnreachable(format!("尚未发现对端 {to},无法获知其地址"))
-        })?;
+        let peer = self
+            .peers
+            .get(&to)
+            .ok_or_else(|| Error::PeerUnreachable(format!("尚未发现对端 {to},无法获知其地址")))?;
 
         let mut last_error = Error::PeerUnreachable("对端没有可用端点".into());
         for endpoint in &peer.endpoints {
-            match Transport::connect_out(&self.static_keys, &peer.noise_static, *endpoint)
-                .await
-            {
+            match Transport::connect_out(&self.static_keys, &peer.noise_static, *endpoint).await {
                 Ok(transport) => {
                     return Ok(register_connection(transport, to, Arc::clone(self)));
                 }
@@ -826,7 +833,11 @@ impl Shared {
     }
 
     fn build_announce(&self, event: PresenceEvent) -> Result<Vec<u8>> {
-        let profile = self.profile.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let profile = self
+            .profile
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let noise_static = self.static_keys.public();
         let info = PresenceInfo {
             event,
@@ -1095,7 +1106,13 @@ fn register_connection(
     // 登记:shutdown 时统一中止,防止 Arc<Shared> 泄漏拖住 UDP socket
     shared.register_task(&tasks[0]);
     shared.register_task(&tasks[1]);
-    conns.insert(node_id, ConnHandle { tx: tx.clone(), tasks });
+    conns.insert(
+        node_id,
+        ConnHandle {
+            tx: tx.clone(),
+            tasks,
+        },
+    );
     tx
 }
 
@@ -1119,7 +1136,8 @@ async fn reader_task(
     loop {
         match read.recv_envelope().await {
             Ok(envelope) => {
-                let fresh = shared.dedup
+                let fresh = shared
+                    .dedup
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(envelope.id);
@@ -1146,7 +1164,8 @@ async fn reader_task(
                     }
                 };
                 if !stale {
-                    shared.conns
+                    shared
+                        .conns
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .remove(&node_id);
@@ -1172,7 +1191,9 @@ async fn heartbeat_loop(shared: Arc<Shared>, every: Duration) {
 
 /// 清扫循环:心跳超时 → 离线事件。
 async fn sweep_loop(shared: Arc<Shared>, heartbeat: Duration, peer_timeout: Duration) {
-    let every = (peer_timeout / 3).max(heartbeat).min(Duration::from_secs(30));
+    let every = (peer_timeout / 3)
+        .max(heartbeat)
+        .min(Duration::from_secs(30));
     let mut ticker = interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;

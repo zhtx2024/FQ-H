@@ -6,8 +6,8 @@
 
 use fq_crypto::{
     Error, HandshakeInitiator, HandshakeResponder, Identity, StaticKeys, TofuStore, TrustDecision,
-    load_or_create_identity, load_tofu, save_tofu, sign_static_key_binding,
-    static_key_fingerprint, verify_static_key_binding,
+    load_or_create_identity, load_tofu, save_tofu, sign_static_key_binding, static_key_fingerprint,
+    verify_static_key_binding,
 };
 use fq_proto::NodeId;
 
@@ -46,9 +46,15 @@ fn full_trust_chain_happy_path() {
 
     // ── Bob 侧 ② TOFU:首次见面 → 固定 ──
     let mut tofu = TofuStore::new();
-    assert_eq!(tofu.verify(&verified_node, &alice_static.public()), TrustDecision::FirstUse);
+    assert_eq!(
+        tofu.verify(&verified_node, &alice_static.public()),
+        TrustDecision::FirstUse
+    );
     tofu.pin(verified_node, &alice_static.public());
-    assert_eq!(tofu.verify(&verified_node, &alice_static.public()), TrustDecision::Trusted);
+    assert_eq!(
+        tofu.verify(&verified_node, &alice_static.public()),
+        TrustDecision::Trusted
+    );
 
     // ── Bob 侧 ③ 用已验证的静态公钥完成 IK 握手 ──
     let bob_static = StaticKeys::generate().unwrap();
@@ -166,7 +172,9 @@ fn handshake_with_wrong_remote_static_fails() {
     let msg1 = alice.first_message(b"").unwrap();
 
     // 真 Bob 无法解开这条消息
-    let result = HandshakeResponder::listen(&real_bob).unwrap().respond(&msg1);
+    let result = HandshakeResponder::listen(&real_bob)
+        .unwrap()
+        .respond(&msg1);
     assert!(result.is_err(), "密钥不匹配的握手必须失败");
 }
 

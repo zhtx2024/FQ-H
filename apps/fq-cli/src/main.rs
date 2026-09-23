@@ -74,29 +74,31 @@ fn main() -> std::process::ExitCode {
 
     let exit_code = match cli.command {
         Command::Chat(args) => runtime.block_on(run_chat(*args)),
-        Command::Id { data_dir } => {
-            runtime.block_on(async move {
-                match fq_core::App::start(AppConfig::new(&data_dir, "探针")).await {
-                    Ok(app) => {
-                        println!("node_id    = {}", app.node_id());
-                        println!("fingerprint= {}", app.fingerprint());
-                        println!("data_dir   = {}", app.data_dir().display());
-                        app.shutdown();
-                        0
-                    }
-                    Err(e) => {
-                        eprintln!("[ERROR] {e}");
-                        1
-                    }
+        Command::Id { data_dir } => runtime.block_on(async move {
+            match fq_core::App::start(AppConfig::new(&data_dir, "探针")).await {
+                Ok(app) => {
+                    println!("node_id    = {}", app.node_id());
+                    println!("fingerprint= {}", app.fingerprint());
+                    println!("data_dir   = {}", app.data_dir().display());
+                    app.shutdown();
+                    0
                 }
-            })
-        }
+                Err(e) => {
+                    eprintln!("[ERROR] {e}");
+                    1
+                }
+            }
+        }),
     };
     std::process::ExitCode::from(u8::try_from(exit_code).unwrap_or(1))
 }
 
 #[derive(Parser)]
-#[command(name = "fq-cli", version, about = "飞秋(FeiQiu)现代化重构 - 命令行客户端")]
+#[command(
+    name = "fq-cli",
+    version,
+    about = "飞秋(FeiQiu)现代化重构 - 命令行客户端"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -191,8 +193,18 @@ async fn run_chat(args: ChatArgs) -> i32 {
         }
     };
 
-    println!("[START] name={} id={} fingerprint={}", args.name, app.node_id(), app.fingerprint());
-    println!("[START] data_dir={} discovery={}/tcp {}", args.data_dir.display(), args.discovery_port, args.listen_port);
+    println!(
+        "[START] name={} id={} fingerprint={}",
+        args.name,
+        app.node_id(),
+        app.fingerprint()
+    );
+    println!(
+        "[START] data_dir={} discovery={}/tcp {}",
+        args.data_dir.display(),
+        args.discovery_port,
+        args.listen_port
+    );
     println!("[START] 输入 /peers 查看成员,/to <名> 选择会话,直接输入文本发送;/quit 退出");
 
     let received: ReceivedLog = Arc::new(Mutex::new(VecDeque::new()));
@@ -276,38 +288,35 @@ async fn handle_line(
                 println!("[OK] 退出");
                 return (0, true);
             }
-            "peers" => {
-                match app.peers().await {
-                    Ok(peers) if peers.is_empty() => println!("[PEERS] (空,等待发现…)"),
-                    Ok(peers) => {
-                        for (index, peer) in peers.iter().enumerate() {
-                            println!(
-                                "[PEER] #{} {} id={} online={} group={:?}",
-                                index + 1,
-                                peer.display_name,
-                                peer.node_id,
-                                peer.online,
-                                peer.group.clone().unwrap_or_else(|| "-".into())
-                            );
-                        }
+            "peers" => match app.peers().await {
+                Ok(peers) if peers.is_empty() => println!("[PEERS] (空,等待发现…)"),
+                Ok(peers) => {
+                    for (index, peer) in peers.iter().enumerate() {
+                        println!(
+                            "[PEER] #{} {} id={} online={} group={:?}",
+                            index + 1,
+                            peer.display_name,
+                            peer.node_id,
+                            peer.online,
+                            peer.group.clone().unwrap_or_else(|| "-".into())
+                        );
                     }
-                    Err(e) => eprintln!("[ERROR] {e}"),
                 }
-            }
-            "to" => {
-                match resolve_peer(app, arg).await {
-                    Some((id, name)) => {
-                        println!("[OK] 当前会话 → {name} ({id})");
-                        *session = Some(id);
-                    }
-                    None => eprintln!("[ERROR] 找不到对端: {arg:?}(先 /peers 查看)"),
+                Err(e) => eprintln!("[ERROR] {e}"),
+            },
+            "to" => match resolve_peer(app, arg).await {
+                Some((id, name)) => {
+                    println!("[OK] 当前会话 → {name} ({id})");
+                    *session = Some(id);
                 }
-            }
+                None => eprintln!("[ERROR] 找不到对端: {arg:?}(先 /peers 查看)"),
+            },
             "msg" => {
                 if let Err(code) = send_text(app, *session, arg).await {
                     return (code, false);
                 }
-            }            "file" => {
+            }
+            "file" => {
                 let Some(to) = *session else {
                     eprintln!("[ERROR] 先用 /to 选择会话");
                     return (0, false);
@@ -356,7 +365,12 @@ async fn handle_line(
             }
             "status" => {
                 let pending = app.pending_count().await.unwrap_or(0);
-                println!("[STATUS] id={} fingerprint={} 待发={}", app.node_id(), app.fingerprint(), pending);
+                println!(
+                    "[STATUS] id={} fingerprint={} 待发={}",
+                    app.node_id(),
+                    app.fingerprint(),
+                    pending
+                );
             }
             "update" => {
                 // 向版本更高的对端索取更新包(对端以 UpdateOffer 回发,自动接收)
@@ -471,7 +485,11 @@ fn wait_message(received: &ReceivedLog, substr: &str, timeout: Duration) -> bool
     while std::time::Instant::now() < deadline {
         let hit = received
             .lock()
-            .map(|log| log.iter().skip(start).any(|(_, body)| body.contains(substr)))
+            .map(|log| {
+                log.iter()
+                    .skip(start)
+                    .any(|(_, body)| body.contains(substr))
+            })
             .unwrap_or(false);
         if hit {
             return true;
@@ -493,7 +511,11 @@ fn wait_file(target: &std::path::Path, timeout: Duration) -> bool {
 }
 
 /// 事件打印任务:把 AppEvent 转成带前缀的可解析行。
-async fn event_printer(app: Arc<App>, mut events: tokio::sync::broadcast::Receiver<AppEvent>, received: ReceivedLog) {
+async fn event_printer(
+    app: Arc<App>,
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+    received: ReceivedLog,
+) {
     loop {
         let Ok(event) = events.recv().await else {
             return;
@@ -522,23 +544,39 @@ async fn event_printer(app: Arc<App>, mut events: tokio::sync::broadcast::Receiv
                     },
                     _ => {}
                 },
-                NodeEvent::PeerDiscovered { peer, first_contact } => {
+                NodeEvent::PeerDiscovered {
+                    peer,
+                    first_contact,
+                } => {
                     println!(
                         "[PEER] 上线: {} ({}){}",
                         peer.display_name,
                         peer.node_id,
-                        if first_contact { " [首次接触,指纹已固定]" } else { "" }
+                        if first_contact {
+                            " [首次接触,指纹已固定]"
+                        } else {
+                            ""
+                        }
                     );
                 }
                 NodeEvent::PeerLost { node_id } => {
                     println!("[OFFLINE] {node_id}");
                 }
-                NodeEvent::TrustWarning { node_id, pinned, presented } => {
+                NodeEvent::TrustWarning {
+                    node_id,
+                    pinned,
+                    presented,
+                } => {
                     eprintln!(
                         "[TRUST-WARN] {node_id} 静态密钥变更!原指纹 {pinned} → 新指纹 {presented}(可能是重装,也可能是中间人;请当面核实)"
                     );
                 }
-                NodeEvent::FileOfferReceived { from, token, manifest, .. } => {
+                NodeEvent::FileOfferReceived {
+                    from,
+                    token,
+                    manifest,
+                    ..
+                } => {
                     println!(
                         "[FILE] 收到来自 {} 的传输 {token}:{} 个条目,共 {} 字节(自动接受)",
                         peer_display_name(&app, from).await,
@@ -546,21 +584,64 @@ async fn event_printer(app: Arc<App>, mut events: tokio::sync::broadcast::Receiv
                         manifest.total_bytes
                     );
                 }
-                NodeEvent::FileProgress { direction, token, path, transferred, total, .. } => {
-                    let arrow = if direction == fq_net::TransferDirection::Sending { "↑" } else { "↓" };
+                NodeEvent::FileProgress {
+                    direction,
+                    token,
+                    path,
+                    transferred,
+                    total,
+                    ..
+                } => {
+                    let arrow = if direction == fq_net::TransferDirection::Sending {
+                        "↑"
+                    } else {
+                        "↓"
+                    };
                     println!("[FILE] {arrow} {path} {transferred}/{total} ({token})");
                 }
-                NodeEvent::FileEntryDone { direction, path, verified, sha256, .. } => {
-                    let arrow = if direction == fq_net::TransferDirection::Sending { "↑" } else { "↓" };
-                    println!("[FILE] {arrow} {path} 完成(校验{},{sha256:.12}…)",
-                        if verified { "通过" } else { "由接收方核对" });
+                NodeEvent::FileEntryDone {
+                    direction,
+                    path,
+                    verified,
+                    sha256,
+                    ..
+                } => {
+                    let arrow = if direction == fq_net::TransferDirection::Sending {
+                        "↑"
+                    } else {
+                        "↓"
+                    };
+                    println!(
+                        "[FILE] {arrow} {path} 完成(校验{},{sha256:.12}…)",
+                        if verified {
+                            "通过"
+                        } else {
+                            "由接收方核对"
+                        }
+                    );
                 }
-                NodeEvent::FileTransferCompleted { direction, token, .. } => {
-                    let arrow = if direction == fq_net::TransferDirection::Sending { "↑" } else { "↓" };
+                NodeEvent::FileTransferCompleted {
+                    direction, token, ..
+                } => {
+                    let arrow = if direction == fq_net::TransferDirection::Sending {
+                        "↑"
+                    } else {
+                        "↓"
+                    };
                     println!("[FILE] {arrow} 传输完成 ({token})");
                 }
-                NodeEvent::FileTransferFailed { direction, token, path, reason, .. } => {
-                    let arrow = if direction == fq_net::TransferDirection::Sending { "↑" } else { "↓" };
+                NodeEvent::FileTransferFailed {
+                    direction,
+                    token,
+                    path,
+                    reason,
+                    ..
+                } => {
+                    let arrow = if direction == fq_net::TransferDirection::Sending {
+                        "↑"
+                    } else {
+                        "↓"
+                    };
                     eprintln!("[FILE] {arrow} 传输失败 ({token}) path={path:?} 原因: {reason}");
                 }
                 other => {
@@ -569,12 +650,19 @@ async fn event_printer(app: Arc<App>, mut events: tokio::sync::broadcast::Receiv
             },
             AppEvent::MessageSaved { .. } | AppEvent::QueueFlushed { .. } => {}
             AppEvent::PeerAvatar { node_id, sha256 } => {
-                eprintln!("[AVATAR] 已缓存 {node_id} 的头像({}…)", &sha256[..sha256.len().min(8)]);
+                eprintln!(
+                    "[AVATAR] 已缓存 {node_id} 的头像({}…)",
+                    &sha256[..sha256.len().min(8)]
+                );
             }
             AppEvent::PeerAvatarRemoved { node_id } => {
                 eprintln!("[AVATAR] {node_id} 已移除头像,本地缓存清理");
             }
-            AppEvent::UpdateReady { from, version, path } => {
+            AppEvent::UpdateReady {
+                from,
+                version,
+                path,
+            } => {
                 eprintln!("[UPDATE] 更新包 v{version} 已下载并校验通过(来自 {from})");
                 eprintln!("[UPDATE] 文件: {path}");
                 eprintln!("[UPDATE] 桌面端会提示一键重启安装;CLI 下可手动替换可执行文件。");

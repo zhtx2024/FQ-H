@@ -14,7 +14,7 @@
 
 use std::fmt;
 
-use ed25519_dalek::{Signer, Signature, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use fq_proto::NodeId;
 use zeroize::Zeroizing;
 
@@ -86,7 +86,8 @@ pub fn verify_signature(
     message: &[u8],
     signature: &[u8; SIGNATURE_LEN],
 ) -> Result<()> {
-    let verifying = VerifyingKey::from_bytes(public_key).map_err(|e| Error::Crypto(format!("非法公钥: {e}")))?;
+    let verifying = VerifyingKey::from_bytes(public_key)
+        .map_err(|e| Error::Crypto(format!("非法公钥: {e}")))?;
     let signature = Signature::from_bytes(signature);
     verifying
         .verify(message, &signature)
@@ -122,7 +123,10 @@ mod tests {
     #[test]
     fn node_id_is_derived_from_public_key() {
         let identity = Identity::generate().unwrap();
-        assert_eq!(identity.node_id(), NodeId::from_public_key(&identity.public_key()));
+        assert_eq!(
+            identity.node_id(),
+            NodeId::from_public_key(&identity.public_key())
+        );
     }
 
     #[test]

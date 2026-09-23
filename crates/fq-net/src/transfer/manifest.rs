@@ -53,7 +53,9 @@ pub fn sanitize_entry_path(raw: &str) -> Result<Vec<String>> {
             return Err(Error::Protocol(format!("路径组件过长: {component:?}")));
         }
         if is_windows_reserved(component) {
-            return Err(Error::Protocol(format!("拒绝 Windows 保留设备名: {component:?}")));
+            return Err(Error::Protocol(format!(
+                "拒绝 Windows 保留设备名: {component:?}"
+            )));
         }
         parts.push(component.to_string());
     }
@@ -65,12 +67,35 @@ pub fn sanitize_entry_path(raw: &str) -> Result<Vec<String>> {
 
 /// Windows 保留设备名(不区分大小写,含带扩展名的形式,如 `CON.txt`)。
 fn is_windows_reserved(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).to_ascii_uppercase();
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or(component)
+        .to_ascii_uppercase();
     matches!(
         stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-            | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-            | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     )
 }
 
@@ -212,7 +237,11 @@ mod tests {
         );
         assert_eq!(
             sanitize_entry_path("设计稿/子目录/封面.png").unwrap(),
-            vec!["设计稿".to_string(), "子目录".to_string(), "封面.png".to_string()]
+            vec![
+                "设计稿".to_string(),
+                "子目录".to_string(),
+                "封面.png".to_string()
+            ]
         );
     }
 
@@ -241,7 +270,9 @@ mod tests {
 
     #[test]
     fn windows_reserved_device_names_are_rejected() {
-        for evil in ["CON", "con.txt", "PRN.log", "AUX", "NUL.dat", "COM1", "lpt9.old"] {
+        for evil in [
+            "CON", "con.txt", "PRN.log", "AUX", "NUL.dat", "COM1", "lpt9.old",
+        ] {
             assert!(
                 sanitize_entry_path(evil).is_err(),
                 "必须拒绝保留设备名: {evil:?}"
@@ -291,7 +322,12 @@ mod tests {
 
         let built = build_manifest(&dir.join("root")).await.unwrap();
         assert_eq!(built.manifest.root_name, "root");
-        let paths: Vec<&str> = built.manifest.entries.iter().map(|e| e.path.as_str()).collect();
+        let paths: Vec<&str> = built
+            .manifest
+            .entries
+            .iter()
+            .map(|e| e.path.as_str())
+            .collect();
         // 根目录与全部子项都在,父目录天然排在子路径前,空目录保留,字典序确定
         assert_eq!(
             paths,

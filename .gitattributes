@@ -1,0 +1,10 @@
+# 统一换行符:仓库内一律 LF,按平台检出;二进制文件不做转换
+* text=auto
+
+*.png binary
+*.ico binary
+*.7z binary
+*.zip binary
+
+# PowerShell 脚本保持 CRLF,避免旧版 Windows PowerShell 的解析差异
+*.ps1 text eol=crlf

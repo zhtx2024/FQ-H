@@ -384,8 +384,7 @@ async fn sender_driver(
     sources: Vec<PathBuf>,
     mut rx: mpsc::Receiver<SessionMsg>,
 ) {
-    let entries: Vec<(FileEntry, PathBuf)> =
-        manifest.entries.into_iter().zip(sources).collect();
+    let entries: Vec<(FileEntry, PathBuf)> = manifest.entries.into_iter().zip(sources).collect();
     let total_entries = entries.len();
     let mut served: HashSet<String> = HashSet::new();
     // 取消标志:stream_entry 在分块之间轮询,实现流式中断
@@ -548,7 +547,10 @@ async fn stream_entry(
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("传输已取消".into());
         }
-        let size = file.read(&mut buf).await.map_err(|e| format!("读取失败: {e}"))?;
+        let size = file
+            .read(&mut buf)
+            .await
+            .map_err(|e| format!("读取失败: {e}"))?;
         if size == 0 {
             break;
         }
@@ -741,7 +743,10 @@ async fn receiver_driver(
                 from,
                 Kind::FileAbort(FileAbort {
                     token: token.clone(),
-                    path: current.as_ref().map(|c| c.entry.path.clone()).unwrap_or_default(),
+                    path: current
+                        .as_ref()
+                        .map(|c| c.entry.path.clone())
+                        .unwrap_or_default(),
                     reason: "已取消接收".into(),
                 }),
             );
@@ -912,8 +917,15 @@ async fn receiver_driver(
                 if let Err(e) = recv.writer.write_all(&chunk.data).await {
                     let reason = format!("写入失败: {e}");
                     let path = recv.entry.path.clone();
-                    abort_and_report(&shared, from, &token, &path, TransferDirection::Receiving, &reason)
-                        .await;
+                    abort_and_report(
+                        &shared,
+                        from,
+                        &token,
+                        &path,
+                        TransferDirection::Receiving,
+                        &reason,
+                    )
+                    .await;
                     return;
                 }
                 recv.received += chunk.data.len() as u64;
@@ -1023,8 +1035,8 @@ async fn setup_entry(
     entry: &FileEntry,
     token: &str,
 ) -> std::result::Result<Setup, String> {
-    let components = sanitize_entry_path(&entry.path)
-        .map_err(|e| format!("清单路径不安全: {e}"))?;
+    let components =
+        sanitize_entry_path(&entry.path).map_err(|e| format!("清单路径不安全: {e}"))?;
 
     // 保存位置:本次会话覆盖(接收确认时选的目录)> 全局设置 > 数据目录默认值
     let base = match session_dir {
@@ -1138,9 +1150,5 @@ async fn unique_destination(path: &std::path::Path) -> PathBuf {
         }
     }
     // 兜底:带上时间戳,几乎不可能走到
-    path.with_file_name(format!(
-        "{stem} ({}{}){ext}",
-        fq_proto::now_ms(),
-        ""
-    ))
+    path.with_file_name(format!("{stem} ({}{}){ext}", fq_proto::now_ms(), ""))
 }

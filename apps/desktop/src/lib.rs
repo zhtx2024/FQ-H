@@ -127,7 +127,10 @@ struct MessageDto {
     status: String,
 }
 
-fn status_of(message: &fq_store::StoredMessage, pending: &std::collections::HashSet<String>) -> String {
+fn status_of(
+    message: &fq_store::StoredMessage,
+    pending: &std::collections::HashSet<String>,
+) -> String {
     if message.read_ms.is_some() {
         "read".into()
     } else if message.delivered_ms.is_some() {
@@ -279,15 +282,14 @@ fn init_file_logging(data_dir: &std::path::Path) {
     let Ok(appender) = appender else {
         return;
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("fq_core=info,fq_net=info,fq_desktop=info"));
-    let subscriber = tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(appender)
-                .with_ansi(false),
-        );
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("fq_core=info,fq_net=info,fq_desktop=info")
+    });
+    let subscriber = tracing_subscriber::registry().with(filter).with(
+        tracing_subscriber::fmt::layer()
+            .with_writer(appender)
+            .with_ansi(false),
+    );
     let _ = subscriber.try_init();
 }
 
@@ -398,8 +400,7 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .map_err(|e| eprintln!("[feiqiu-r] 运行失败: {e}"))
-        .err()
-        ;
+        .err();
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -407,10 +408,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .ok_or("缺少窗口图标")?;
+    let icon = app.default_window_icon().cloned().ok_or("缺少窗口图标")?;
 
     TrayIconBuilder::with_id("main")
         .icon(icon)
@@ -458,14 +456,16 @@ async fn forward_events(
                 to: to.to_hex(),
                 count,
             }),
-            fq_core::AppEvent::UpdateReady { from, version, path } => {
-                Some(FqEventDto::UpdateReady {
-                    from: from.to_hex(),
-                    from_name: name_of(from),
-                    version,
-                    path,
-                })
-            }
+            fq_core::AppEvent::UpdateReady {
+                from,
+                version,
+                path,
+            } => Some(FqEventDto::UpdateReady {
+                from: from.to_hex(),
+                from_name: name_of(from),
+                version,
+                path,
+            }),
             fq_core::AppEvent::PeerAvatar { node_id, .. } => Some(FqEventDto::PeerAvatar {
                 node_id: node_id.to_hex(),
             }),
@@ -489,7 +489,11 @@ async fn forward_events(
                 fq_net::NodeEvent::PeerLost { node_id } => Some(FqEventDto::PeerDown {
                     node_id: node_id.to_hex(),
                 }),
-                fq_net::NodeEvent::TrustWarning { node_id, pinned, presented } => {
+                fq_net::NodeEvent::TrustWarning {
+                    node_id,
+                    pinned,
+                    presented,
+                } => {
                     notify(&handle, "feiqiu-r 信任告警", "检测到静态密钥变更,请核实");
                     Some(FqEventDto::TrustWarning {
                         node_id: node_id.to_hex(),
@@ -516,7 +520,12 @@ async fn forward_events(
                     },
                     _ => None,
                 },
-                fq_net::NodeEvent::FileOfferReceived { from, token, manifest, .. } => {
+                fq_net::NodeEvent::FileOfferReceived {
+                    from,
+                    token,
+                    manifest,
+                    ..
+                } => {
                     let from_name = name_of(from);
                     notify(
                         &handle,
@@ -530,27 +539,34 @@ async fn forward_events(
                         total_bytes: manifest.total_bytes,
                     })
                 }
-                fq_net::NodeEvent::FileProgress { direction, token, path, transferred, total, .. } => {
-                    Some(FqEventDto::FileProgress {
-                        direction: direction_str(direction),
-                        token,
-                        path,
-                        transferred,
-                        total,
-                    })
-                }
-                fq_net::NodeEvent::FileEntryDone { direction, token, path, verified, peer, .. } => {
+                fq_net::NodeEvent::FileProgress {
+                    direction,
+                    token,
+                    path,
+                    transferred,
+                    total,
+                    ..
+                } => Some(FqEventDto::FileProgress {
+                    direction: direction_str(direction),
+                    token,
+                    path,
+                    transferred,
+                    total,
+                }),
+                fq_net::NodeEvent::FileEntryDone {
+                    direction,
+                    token,
+                    path,
+                    verified,
+                    peer,
+                    ..
+                } => {
                     // 接收方文件完成(校验通过)→ 插入聊天历史(图片/文件气泡)
                     if direction == fq_net::TransferDirection::Receiving && verified {
-                        let file_name = path
-                            .rsplit(['/', '\\'])
-                            .next()
-                            .unwrap_or(&path)
-                            .to_string();
+                        let file_name =
+                            path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
                         let local_path = fq_app.download_dir().join(&path);
-                        let size = std::fs::metadata(&local_path)
-                            .map(|m| m.len())
-                            .unwrap_or(0);
+                        let size = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
                         let path_str = local_path.display().to_string();
                         let fq = Arc::clone(&fq_app);
                         tokio::spawn(async move {
@@ -569,7 +585,12 @@ async fn forward_events(
                         verified,
                     })
                 }
-                fq_net::NodeEvent::UpdateOfferReceived { from, token, version, manifest } => {
+                fq_net::NodeEvent::UpdateOfferReceived {
+                    from,
+                    token,
+                    version,
+                    manifest,
+                } => {
                     let from_name = name_of(from);
                     notify(
                         &handle,
@@ -584,7 +605,12 @@ async fn forward_events(
                         total_bytes: manifest.total_bytes,
                     })
                 }
-                fq_net::NodeEvent::UpdatePackageReady { from, version, path, .. } => {
+                fq_net::NodeEvent::UpdatePackageReady {
+                    from,
+                    version,
+                    path,
+                    ..
+                } => {
                     notify(
                         &handle,
                         "feiqiu-r 更新就绪",
@@ -597,20 +623,24 @@ async fn forward_events(
                         path,
                     })
                 }
-                fq_net::NodeEvent::FileTransferCompleted { direction, token, .. } => {
-                    Some(FqEventDto::FileCompleted {
-                        direction: direction_str(direction),
-                        token,
-                    })
-                }
-                fq_net::NodeEvent::FileTransferFailed { direction, token, path, reason, .. } => {
-                    Some(FqEventDto::FileFailed {
-                        direction: direction_str(direction),
-                        token,
-                        path,
-                        reason,
-                    })
-                }
+                fq_net::NodeEvent::FileTransferCompleted {
+                    direction, token, ..
+                } => Some(FqEventDto::FileCompleted {
+                    direction: direction_str(direction),
+                    token,
+                }),
+                fq_net::NodeEvent::FileTransferFailed {
+                    direction,
+                    token,
+                    path,
+                    reason,
+                    ..
+                } => Some(FqEventDto::FileFailed {
+                    direction: direction_str(direction),
+                    token,
+                    path,
+                    reason,
+                }),
             },
         };
         if let Some(dto) = dto {
@@ -773,10 +803,12 @@ async fn list_peers(state: State<'_, FqState>) -> Result<Vec<PeerDto>, String> {
 
 /// 同意接收文件要约;`dir` 为本次保存位置(可选)。
 #[tauri::command]
-fn accept_file_offer(state: State<'_, FqState>, token: String, dir: Option<String>) -> Result<bool, String> {
-    Ok(state
-        .app
-        .accept_file_offer(&token, dir.map(PathBuf::from)))
+fn accept_file_offer(
+    state: State<'_, FqState>,
+    token: String,
+    dir: Option<String>,
+) -> Result<bool, String> {
+    Ok(state.app.accept_file_offer(&token, dir.map(PathBuf::from)))
 }
 
 /// 拒绝接收文件要约。
@@ -834,11 +866,17 @@ fn open_file(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?;
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -950,9 +988,7 @@ async fn get_peer_avatar(
         .peer_avatar(&node_id)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(avatar.map(|(_, mime, data)| {
-        format!("data:{mime};base64,{}", base64_encode(&data))
-    }))
+    Ok(avatar.map(|(_, mime, data)| format!("data:{mime};base64,{}", base64_encode(&data))))
 }
 
 /// 把本机头像文件转成 data URL(空字符串表示没有)。
@@ -981,10 +1017,7 @@ async fn set_profile(
 ) -> Result<(), String> {
     let (current_name, _) = state.app.profile();
     let new_name = name.unwrap_or(current_name);
-    state
-        .app
-        .set_profile(&new_name, group.as_deref())
-        .await;
+    state.app.set_profile(&new_name, group.as_deref()).await;
 
     let mut profile = load_profile(state.app.data_dir());
     profile.name = Some(new_name);
@@ -1031,7 +1064,11 @@ fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(TABLE[(n >> 18) as usize & 63] as char);
         out.push(TABLE[(n >> 12) as usize & 63] as char);
@@ -1062,9 +1099,7 @@ async fn take_screenshot(
         let _ = parse_node_id(&target)?;
     }
     // 1. 最小化主窗口,让用户看到屏幕
-    let window = app
-        .get_webview_window("main")
-        .ok_or("找不到主窗口")?;
+    let window = app.get_webview_window("main").ok_or("找不到主窗口")?;
     let _ = window.minimize();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
@@ -1156,7 +1191,11 @@ async fn send_text(
     body: String,
 ) -> Result<SendResultDto, String> {
     let to = parse_node_id(&node_id)?;
-    let outcome = state.app.send_text(to, &body).await.map_err(|e| e.to_string())?;
+    let outcome = state
+        .app
+        .send_text(to, &body)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(SendResultDto {
         id: outcome.message_id().to_string(),
         queued: outcome.is_queued(),
@@ -1297,7 +1336,11 @@ struct TransferHistoryDto {
 async fn request_update(state: State<'_, FqState>, node_id: String) -> Result<(), String> {
     let to = parse_node_id(&node_id)?;
     tracing::info!(target = "fq_desktop", to = %to, "UI 请求更新包");
-    state.app.request_update(to).await.map_err(|e| e.to_string())
+    state
+        .app
+        .request_update(to)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 安装已下载并校验通过的更新包(会重启应用)。
@@ -1373,10 +1416,7 @@ async fn clear_transfer_history(state: State<'_, FqState>) -> Result<usize, Stri
 }
 
 #[tauri::command]
-async fn delete_transfer_history(
-    state: State<'_, FqState>,
-    token: String,
-) -> Result<bool, String> {
+async fn delete_transfer_history(state: State<'_, FqState>, token: String) -> Result<bool, String> {
     state
         .app
         .delete_transfer_history(&token)
@@ -1411,10 +1451,7 @@ async fn list_conversations(state: State<'_, FqState>) -> Result<Vec<Conversatio
 }
 
 #[tauri::command]
-async fn mark_conversation_read(
-    state: State<'_, FqState>,
-    peer: String,
-) -> Result<(), String> {
+async fn mark_conversation_read(state: State<'_, FqState>, peer: String) -> Result<(), String> {
     state
         .app
         .mark_conversation_read(&peer)

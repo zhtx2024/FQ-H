@@ -41,7 +41,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
-pub mod capability;pub mod codec;
+pub mod capability;
+pub mod codec;
 pub mod error;
 pub mod frame;
 pub mod ids;

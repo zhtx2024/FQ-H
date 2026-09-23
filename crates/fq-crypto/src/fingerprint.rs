@@ -42,7 +42,9 @@ mod tests {
         for group in groups {
             assert_eq!(group.len(), 4, "每组 4 个字符: {fp}");
             assert!(
-                group.chars().all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c)),
+                group
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c)),
                 "应为大写 hex: {fp}"
             );
         }

@@ -13,7 +13,13 @@ use fq_net::{Node, NodeConfig, NodeEvent};
 async fn offer_waits_for_user_acceptance_and_honors_directory_choice() {
     let default_dir = temp_dir("accept-default");
     let chosen_dir = temp_dir("accept-chosen");
-    let (a, b) = node_pair("accept", (26201, 26202), (26211, 26212), default_dir.clone()).await;
+    let (a, b) = node_pair(
+        "accept",
+        (26201, 26202),
+        (26211, 26212),
+        default_dir.clone(),
+    )
+    .await;
 
     // B 关闭自动接受(桌面模式)
     b.shutdown();
@@ -53,7 +59,9 @@ async fn offer_waits_for_user_acceptance_and_honors_directory_choice() {
         matches!(e, NodeEvent::FileOfferReceived { .. })
     })
     .await;
-    let NodeEvent::FileOfferReceived { manifest, .. } = offer else { unreachable!() };
+    let NodeEvent::FileOfferReceived { manifest, .. } = offer else {
+        unreachable!()
+    };
     assert_eq!(manifest.total_bytes, payload.len() as u64);
 
     // ② 决策前:1 秒内不得出现任何数据(没有偷偷开始)
@@ -78,7 +86,10 @@ async fn offer_waits_for_user_acceptance_and_honors_directory_choice() {
 
     let received = std::fs::read(chosen_dir.join("确认流.bin")).expect("应保存在自选目录");
     assert_eq!(received, payload);
-    assert!(!default_dir.join("确认流.bin").exists(), "默认目录不应有文件");
+    assert!(
+        !default_dir.join("确认流.bin").exists(),
+        "默认目录不应有文件"
+    );
     a.shutdown();
     b.shutdown();
 }
@@ -130,7 +141,9 @@ async fn rejected_offer_stops_sender_with_failure_event() {
         matches!(e, NodeEvent::FileTransferFailed { .. })
     })
     .await;
-    let NodeEvent::FileTransferFailed { reason, .. } = failed else { unreachable!() };
+    let NodeEvent::FileTransferFailed { reason, .. } = failed else {
+        unreachable!()
+    };
     assert!(reason.contains("拒绝"), "失败原因应说明被拒绝: {reason}");
     assert!(!download.join("拒绝.bin").exists());
 
@@ -142,7 +155,13 @@ async fn rejected_offer_stops_sender_with_failure_event() {
 async fn download_dir_change_applies_to_new_transfers() {
     let first_dir = temp_dir("dir-first");
     let second_dir = temp_dir("dir-second");
-    let (a, b) = node_pair("dirchange", (26241, 26242), (26251, 26252), first_dir.clone()).await;
+    let (a, b) = node_pair(
+        "dirchange",
+        (26241, 26242),
+        (26251, 26252),
+        first_dir.clone(),
+    )
+    .await;
 
     let src_dir = temp_dir("dirchange-send");
     let src = src_dir.join("改目录.bin");
@@ -156,9 +175,14 @@ async fn download_dir_change_applies_to_new_transfers() {
         matches!(e, NodeEvent::FileTransferCompleted { .. })
     })
     .await;
-    let NodeEvent::FileTransferCompleted { token: t, .. } = done else { unreachable!() };
+    let NodeEvent::FileTransferCompleted { token: t, .. } = done else {
+        unreachable!()
+    };
     assert_eq!(t, token);
-    assert!(second_dir.join("改目录.bin").exists(), "应保存到修改后的目录");
+    assert!(
+        second_dir.join("改目录.bin").exists(),
+        "应保存到修改后的目录"
+    );
     assert!(!first_dir.join("改目录.bin").exists());
 
     a.shutdown();

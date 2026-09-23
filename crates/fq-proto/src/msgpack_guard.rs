@@ -337,19 +337,14 @@ mod tests {
     fn rejects_truncated_input() {
         let full = encoded(&vec![1u8, 2, 3, 4, 5]);
         for cut in 1..full.len() {
-            assert!(
-                validate(&full[..cut]).is_err(),
-                "截断到 {cut} 字节时应报错"
-            );
+            assert!(validate(&full[..cut]).is_err(), "截断到 {cut} 字节时应报错");
         }
     }
 
     #[test]
     fn accepts_nested_structures() {
-        let value = std::collections::HashMap::from([(
-            "key".to_string(),
-            vec![Some(1u32), None, Some(3)],
-        )]);
+        let value =
+            std::collections::HashMap::from([("key".to_string(), vec![Some(1u32), None, Some(3)])]);
         assert!(validate(&encoded(&value)).is_ok());
     }
 }

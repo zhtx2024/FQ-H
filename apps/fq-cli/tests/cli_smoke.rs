@@ -155,13 +155,37 @@ async fn two_cli_processes_full_mvp_flow() {
     let b_run = b_task.await.expect("B 任务 join 失败");
 
     // 两进程都应成功退出
-    assert_eq!(a_run.code, Some(0), "Alice 退出码异常\nstdout:\n{}\nstderr:\n{}", a_run.stdout, a_run.stderr);
-    assert_eq!(b_run.code, Some(0), "Bob 退出码异常\nstdout:\n{}\nstderr:\n{}", b_run.stdout, b_run.stderr);
+    assert_eq!(
+        a_run.code,
+        Some(0),
+        "Alice 退出码异常\nstdout:\n{}\nstderr:\n{}",
+        a_run.stdout,
+        a_run.stderr
+    );
+    assert_eq!(
+        b_run.code,
+        Some(0),
+        "Bob 退出码异常\nstdout:\n{}\nstderr:\n{}",
+        b_run.stdout,
+        b_run.stderr
+    );
 
     // 关键链路断言
-    assert!(a_run.stdout.contains("[PEER] 上线: Bob"), "A 应发现 Bob:\n{}", a_run.stdout);
-    assert!(b_run.stdout.contains("[PEER] 上线: Alice"), "B 应发现 Alice:\n{}", b_run.stdout);
-    assert!(a_run.stdout.contains("[SENT] 你好,来自 CLI 验收"), "A 应成功发出文本:\n{}", a_run.stdout);
+    assert!(
+        a_run.stdout.contains("[PEER] 上线: Bob"),
+        "A 应发现 Bob:\n{}",
+        a_run.stdout
+    );
+    assert!(
+        b_run.stdout.contains("[PEER] 上线: Alice"),
+        "B 应发现 Alice:\n{}",
+        b_run.stdout
+    );
+    assert!(
+        a_run.stdout.contains("[SENT] 你好,来自 CLI 验收"),
+        "A 应成功发出文本:\n{}",
+        a_run.stdout
+    );
     assert!(
         b_run.stdout.contains("[RECV] Alice: 你好,来自 CLI 验收"),
         "B 应收到文本:\n{}",
@@ -172,7 +196,11 @@ async fn two_cli_processes_full_mvp_flow() {
         "A 应收到送达/已读回执:\n{}",
         a_run.stdout
     );
-    assert!(b_run.stdout.contains("[FILE] ↓ 传输完成"), "B 侧文件传输应完成:\n{}", b_run.stdout);
+    assert!(
+        b_run.stdout.contains("[FILE] ↓ 传输完成"),
+        "B 侧文件传输应完成:\n{}",
+        b_run.stdout
+    );
 
     // 文件内容逐字节一致
     let received = std::fs::read(b_download.join("验收数据.bin")).expect("接收文件应存在");
@@ -180,5 +208,9 @@ async fn two_cli_processes_full_mvp_flow() {
     assert_eq!(received, payload, "文件内容必须与源一致");
 
     // B 的历史包含双方消息
-    assert!(b_run.stdout.contains("对方"), "历史应包含对方消息:\n{}", b_run.stdout);
+    assert!(
+        b_run.stdout.contains("对方"),
+        "历史应包含对方消息:\n{}",
+        b_run.stdout
+    );
 }
