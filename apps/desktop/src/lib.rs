@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -46,6 +47,10 @@ struct Profile {
     auto_update: Option<bool>,
     /// 是否自动接收文件传输(默认关闭 → 弹窗确认)。
     auto_accept_files: Option<bool>,
+    /// 在线状态(online / away / busy / dnd)。
+    status: Option<String>,
+    /// 发送方向限速(字节/秒;0 = 不限速)。
+    send_limit_bytes: Option<u64>,
 }
 
 fn load_profile(dir: &std::path::Path) -> Profile {
@@ -127,6 +132,8 @@ struct MessageDto {
     read: bool,
     /// 发送状态:`pending`(在待发队列)/ `sent` / `delivered` / `read`。
     status: String,
+    /// 发送方 NodeId(群聊里显示是谁发的)。
+    from_node: String,
 }
 
 fn status_of(
@@ -154,6 +161,7 @@ fn message_dto(
         outgoing: m.is_outgoing,
         kind: m.kind,
         body: m.body,
+        from_node: m.from_node,
         ts_ms: m.ts_ms,
         delivered: m.delivered_ms.is_some(),
         read: m.read_ms.is_some(),
@@ -253,6 +261,11 @@ enum FqEventDto {
     PeerAvatarRemoved {
         node_id: String,
     },
+    /// 收到窗口抖动(前端晃动窗口 + 显示提示)。
+    Shaken {
+        from: String,
+        from_name: String,
+    },
 }
 
 fn direction_str(d: fq_net::TransferDirection) -> &'static str {
@@ -331,6 +344,11 @@ pub fn run() {
             // 桌面端默认关闭自动接受:文件要约走 UI 确认流
             // (可在 profile.json 里设 "auto_accept_files": true 免确认,适合无人值守/演示)
             config.auto_accept_files = profile.auto_accept_files.unwrap_or(false);
+            // 发送限速与在线状态:profile.json 可预置,设置页改动会写回
+            config.send_limit_bytes = profile.send_limit_bytes.unwrap_or(0);
+            if let Some(status) = profile.status.as_deref() {
+                config.status = fq_proto::PresenceStatus::parse(status);
+            }
             // 版本号随通告广播:局域网内可发现更新版本
             config.app_version = Some(env!("CARGO_PKG_VERSION").to_string());
             let fq = tauri::async_runtime::block_on(fq_core::App::start(config))
@@ -395,11 +413,17 @@ pub fn run() {
             install_update,
             get_preferences,
             set_auto_update,
+            set_status,
+            set_transfer_limit,
+            probe_peer,
+            add_firewall_rules,
             choose_avatar,
             clear_avatar,
             get_self_avatar,
             get_peer_avatar,
-            delete_conversation
+            delete_conversation,
+            send_shake,
+            delete_message
         ])
         .run(tauri::generate_context!())
         .map_err(|e| eprintln!("[feiqiu-r] 运行失败: {e}"))
@@ -477,6 +501,10 @@ async fn forward_events(
                     node_id: node_id.to_hex(),
                 })
             }
+            fq_core::AppEvent::Shaken { from } => Some(FqEventDto::Shaken {
+                from: from.to_hex(),
+                from_name: name_of(from),
+            }),
             fq_core::AppEvent::Node(inner) => match *inner {
                 fq_net::NodeEvent::PeerDiscovered { peer, .. }
                 | fq_net::NodeEvent::PeerUpdated { peer, .. } => {
@@ -1035,16 +1063,107 @@ struct PreferencesDto {
     auto_update: bool,
     /// 本机版本(便于前端展示/比较)。
     local_version: String,
+    /// 当前在线状态(online / away / busy / dnd)。
+    status: String,
+    /// 发送方向限速(字节/秒;0 = 不限速)。
+    send_limit_bytes: u64,
+    /// 数据目录(设置页可一键打开)。
+    data_dir: String,
+    /// 日志目录(排查问题时用)。
+    log_dir: String,
+    /// 当前 TCP 监听端口(防火墙放行规则用)。
+    listen_port: u16,
 }
 
-/// 读取偏好设置(自动更新开关等)。
+/// 读取偏好设置(通用设置页需要)。
 #[tauri::command]
 fn get_preferences(state: State<'_, FqState>) -> Result<PreferencesDto, String> {
     let profile = load_profile(state.app.data_dir());
     Ok(PreferencesDto {
         auto_update: profile.auto_update.unwrap_or(false),
         local_version: env!("CARGO_PKG_VERSION").to_string(),
+        status: state.app.status().as_str().to_string(),
+        send_limit_bytes: profile.send_limit_bytes.unwrap_or(0),
+        data_dir: state.app.data_dir().display().to_string(),
+        log_dir: state.app.data_dir().join("logs").display().to_string(),
+        listen_port: state.app.node().listen_port(),
     })
+}
+
+/// 设置在线状态(online / away / busy / dnd)并立即通告。
+#[tauri::command]
+async fn set_status(state: State<'_, FqState>, status: String) -> Result<(), String> {
+    let parsed = fq_proto::PresenceStatus::parse(&status);
+    state.app.set_status(parsed).await;
+    let mut profile = load_profile(state.app.data_dir());
+    profile.status = Some(parsed.as_str().to_string());
+    save_profile(state.app.data_dir(), &profile)
+}
+
+/// 设置发送方向限速(字节/秒;0 = 不限速),并持久化。
+#[tauri::command]
+fn set_transfer_limit(state: State<'_, FqState>, bytes_per_sec: u64) -> Result<(), String> {
+    state.app.set_send_limit(bytes_per_sec);
+    let mut profile = load_profile(state.app.data_dir());
+    profile.send_limit_bytes = Some(bytes_per_sec);
+    save_profile(state.app.data_dir(), &profile)
+}
+
+/// 手动探测:向指定 IP(或 `ip:端口`)定向发一次通告,对方首次见我们会立即回发。
+#[tauri::command]
+async fn probe_peer(state: State<'_, FqState>, target: String) -> Result<String, String> {
+    let raw = target.trim();
+    if raw.is_empty() {
+        return Err("请输入对方 IP".into());
+    }
+    let addr: SocketAddr = if raw.contains(':') {
+        raw.parse()
+            .map_err(|e| format!("地址格式不正确(应为 ip 或 ip:port): {e}"))?
+    } else {
+        let ip: IpAddr = raw.parse().map_err(|e| format!("IP 格式不正确: {e}"))?;
+        SocketAddr::new(ip, fq_proto::DEFAULT_PORT)
+    };
+    state.app.announce_to(addr).await;
+    Ok(format!("已向 {addr} 发送探测,请稍候查看联系人是否出现"))
+}
+
+/// 添加 Windows 防火墙入站放行规则(需要 UAC 提权;用户需在弹窗点"是")。
+#[tauri::command]
+fn add_firewall_rules(state: State<'_, FqState>) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let profile = load_profile(state.app.data_dir());
+        let udp_port = profile.discovery_port.unwrap_or(fq_proto::DEFAULT_PORT);
+        let tcp_port = state.app.node().listen_port();
+        let script = format!(
+            "$n='feiqiu-r 局域网通讯'\r\n\
+             netsh advfirewall firewall delete rule name=$n | Out-Null\r\n\
+             netsh advfirewall firewall add rule name=$n dir=in action=allow protocol=UDP localport={udp_port} profile=any | Out-Null\r\n\
+             netsh advfirewall firewall add rule name=$n dir=in action=allow protocol=TCP localport={tcp_port} profile=any | Out-Null\r\n"
+        );
+        let path = std::env::temp_dir().join("fq-firewall.ps1");
+        std::fs::write(&path, script).map_err(|e| format!("写入脚本失败: {e}"))?;
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Process"])
+            .arg("powershell")
+            .args([
+                "-Verb",
+                "RunAs",
+                "-ArgumentList",
+                "-NoProfile,-ExecutionPolicy,Bypass,-File",
+            ])
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("启动提权进程失败: {e}"))?;
+        Ok(format!(
+            "已提交放行规则(UDP {udp_port} / TCP {tcp_port}),请在 UAC 弹窗点“是”"
+        ))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = state;
+        Err("当前平台无需或暂不支持自动放行".into())
+    }
 }
 
 /// 设置"自动获取并安装更新"。
@@ -1332,6 +1451,52 @@ struct TransferHistoryDto {
     detail: Option<String>,
     started_ms: i64,
     finished_ms: Option<i64>,
+}
+
+/// 发送窗口抖动(飞秋经典功能;目标可为单聊对端或 `group:...` 群)。
+#[tauri::command]
+async fn send_shake(state: State<'_, FqState>, target: String) -> Result<(), String> {
+    if let Some(group_id) = target.strip_prefix("group:") {
+        let group_key = format!("group:{group_id}");
+        let group = state
+            .app
+            .list_groups()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|g| g.id == group_key)
+            .ok_or("找不到该群聊")?;
+        let mut sent = 0;
+        for member in &group.members {
+            let Ok(id) = fq_proto::NodeId::from_hex(member) else {
+                continue;
+            };
+            if state.app.send_shake(id).await.is_ok() {
+                sent += 1;
+            }
+        }
+        if sent == 0 {
+            return Err("群成员均不可达,抖动未能发出".into());
+        }
+        return Ok(());
+    }
+    let to = parse_node_id(&target)?;
+    state
+        .app
+        .send_shake(to)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// 本地删除一条历史消息(只删本机)。
+#[tauri::command]
+async fn delete_message(state: State<'_, FqState>, id: String) -> Result<bool, String> {
+    state
+        .app
+        .delete_message(&id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 向对端索取更新包(对端版本更高时自动回发并接收)。

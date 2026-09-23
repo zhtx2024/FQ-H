@@ -196,6 +196,13 @@ impl DiscoveryEndpoint {
         }
     }
 
+    /// 向指定地址**单播**一份通告副本(手动探测 / 直连握手用)。
+    pub async fn announce_to(&self, datagram: &[u8], target: SocketAddr) {
+        if let Err(e) = self.socket.send_to(datagram, target).await {
+            tracing::debug!(target = "fq_net::discovery", %e, %target, "定向通告发送失败");
+        }
+    }
+
     /// 接收一个数据报,返回(字节数, 来源地址)。
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
         let (size, source) = self.socket.recv_from(buf).await?;

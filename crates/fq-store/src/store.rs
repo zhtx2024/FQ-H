@@ -423,6 +423,7 @@ impl Store {
         let preview = match message.kind.as_str() {
             "image" => "[图片]".to_string(),
             "file" => "[文件]".to_string(),
+            "shake" => "[窗口抖动]".to_string(),
             _ => message
                 .body
                 .clone()
@@ -498,6 +499,15 @@ impl Store {
         let n = self
             .conn
             .execute("DELETE FROM conversations WHERE peer = ?1", params![peer])
+            .map_err(Error::Sqlite)?;
+        Ok(n > 0)
+    }
+
+    /// 本地删除一条历史消息(仅本机;对端保留自己的副本)。
+    pub fn delete_message(&self, id: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM messages WHERE id = ?1", params![id])
             .map_err(Error::Sqlite)?;
         Ok(n > 0)
     }

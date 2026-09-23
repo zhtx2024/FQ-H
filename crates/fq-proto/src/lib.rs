@@ -57,6 +57,6 @@ pub use ids::{MsgId, NodeId};
 pub use message::{
     AckBody, AckStatus, AvatarPayload, AvatarReply, AvatarRequest, DEFAULT_PORT, Envelope,
     FileAbort, FileChunk, FileDone, FileEntry, FileKind, FileManifest, FileOffer, FileRequest,
-    Kind, PingBody, PresenceEvent, PresenceInfo, PresenceStatus, TextBody, TextFormat, TypingBody,
-    TypingState, UpdateOffer, UpdateRequest, now_ms,
+    Kind, PingBody, PresenceEvent, PresenceInfo, PresenceStatus, ShakeBody, TextBody, TextFormat,
+    TypingBody, TypingState, UpdateOffer, UpdateRequest, now_ms,
 };

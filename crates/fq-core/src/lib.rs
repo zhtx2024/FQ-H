@@ -35,7 +35,8 @@ use std::time::Duration;
 
 use fq_net::{Node, NodeEvent, NodeHandle};
 use fq_proto::{
-    AckBody, AckStatus, Envelope, Kind, MsgId, NodeId, TextBody, TextFormat, codec, now_ms,
+    AckBody, AckStatus, Envelope, Kind, MsgId, NodeId, ShakeBody, TextBody, TextFormat, codec,
+    now_ms,
 };
 use fq_store::{GroupRecord, NewMessage, PeerRecord, Store, StoredMessage};
 use tokio::sync::{Mutex, broadcast};
@@ -87,6 +88,11 @@ pub enum AppEvent {
     PeerAvatarRemoved {
         /// 对端。
         node_id: NodeId,
+    },
+    /// 收到窗口抖动(UI 应晃动窗口并留下一条记录)。
+    Shaken {
+        /// 发起方。
+        from: NodeId,
     },
 }
 
@@ -165,6 +171,10 @@ pub struct AppConfig {
     pub app_version: Option<String>,
     /// 对外提供的更新包路径(默认本机可执行文件;运维/测试可指定安装包)。
     pub update_package: Option<PathBuf>,
+    /// 发送方向限速(字节/秒;0 = 不限速)。
+    pub send_limit_bytes: u64,
+    /// 初始在线状态(在线/忙碌/勿扰/离开)。
+    pub status: fq_proto::PresenceStatus,
 }
 
 impl AppConfig {
@@ -185,6 +195,8 @@ impl AppConfig {
             auto_accept_files: true,
             app_version: None,
             update_package: None,
+            send_limit_bytes: 0,
+            status: fq_proto::PresenceStatus::Online,
         }
     }
 }
@@ -244,6 +256,8 @@ impl App {
         node_config.auto_accept_files = config.auto_accept_files;
         node_config.app_version = config.app_version.clone();
         node_config.avatar_sha256 = avatar_sha256;
+        node_config.send_limit_bytes = config.send_limit_bytes;
+        node_config.status = config.status;
 
         let node = Node::start(node_config).await?;
         let handle = node.handle().clone();
@@ -341,6 +355,68 @@ impl App {
                 Ok(SendOutcome::Queued(id))
             }
         }
+    }
+
+    /// 发送窗口抖动(飞秋经典功能:提醒对方注意;对方会晃动窗口并留下一条记录)。
+    ///
+    /// 与文本一样走"可达即发、不可达入队"的路径,保证对端上线后仍能收到。
+    pub async fn send_shake(&self, to: NodeId) -> Result<SendOutcome> {
+        let envelope =
+            Envelope::direct(self.node_id(), to, Kind::Shake(ShakeBody { reason: None }));
+        let id = envelope.id;
+        match self.handle.send(envelope.clone()).await {
+            Ok(()) => {
+                self.store
+                    .lock()
+                    .await
+                    .insert_message(&new_message(&envelope, true))
+                    .map_err(Error::Store)?;
+                let _ = self.events.send(AppEvent::MessageSaved {
+                    peer: to,
+                    outgoing: true,
+                    id,
+                });
+                Ok(SendOutcome::Sent(id))
+            }
+            Err(_) => {
+                let blob = codec::encode(&envelope).map_err(Error::Proto)?;
+                self.store
+                    .lock()
+                    .await
+                    .enqueue(&id.to_string(), &to.to_hex(), &blob, now_ms())
+                    .map_err(Error::Store)?;
+                Ok(SendOutcome::Queued(id))
+            }
+        }
+    }
+
+    /// 本地删除一条历史消息(只删本机;对端不受影响)。
+    pub async fn delete_message(&self, id: &str) -> Result<bool> {
+        self.store
+            .lock()
+            .await
+            .delete_message(id)
+            .map_err(Error::Store)
+    }
+
+    /// 设置在线状态(在线/忙碌/勿扰/离开)并立即通告。
+    pub async fn set_status(&self, status: fq_proto::PresenceStatus) {
+        self.handle.set_status(status).await;
+    }
+
+    /// 当前在线状态。
+    pub fn status(&self) -> fq_proto::PresenceStatus {
+        self.handle.status()
+    }
+
+    /// 设置发送方向限速(字节/秒;0 = 不限速)。
+    pub fn set_send_limit(&self, bytes_per_sec: u64) {
+        self.handle.set_send_limit(bytes_per_sec);
+    }
+
+    /// 向指定地址定向通告一次(手动探测:对方首次见我们会立即回发,从而互相发现)。
+    pub async fn announce_to(&self, target: SocketAddr) {
+        self.handle.announce_to(target).await;
     }
 
     /// 取消一个进行中的传输(发送中断分块流 / 接收中断并保留 .part)。
@@ -1421,6 +1497,30 @@ async fn event_pump(
                         if delivered.is_some() {
                             let _ = store.lock().await.remove_pending(&id);
                         }
+                    }
+                    Kind::Shake(_) => {
+                        // 窗口抖动:落一条记录(两边都有上下文),并通知 UI 抖窗口
+                        let envelope_id = envelope.id;
+                        let saved = NewMessage {
+                            id: envelope_id.to_string(),
+                            peer: from.to_hex(),
+                            is_outgoing: false,
+                            from_node: from.to_hex(),
+                            kind: "shake".into(),
+                            body: None,
+                            format: None,
+                            ts_ms: envelope.ts_ms,
+                            created_ms: now_ms(),
+                        };
+                        if let Err(e) = store.lock().await.insert_message(&saved) {
+                            tracing::warn!(target = "fq_core", %e, "抖动记录入库失败");
+                        }
+                        let _ = out.send(AppEvent::Shaken { from: *from });
+                        let _ = out.send(AppEvent::MessageSaved {
+                            peer: *from,
+                            outgoing: false,
+                            id: envelope_id,
+                        });
                     }
                     _ => {}
                 }

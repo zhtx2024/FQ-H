@@ -176,16 +176,39 @@ export const deleteTransferHistory = (token: string) =>
 export const cancelTransfer = (token: string) =>
   invoke<boolean>("cancel_transfer", { token });
 
-/** 偏好设置(自动更新等)。 */
+/** 偏好设置(通用设置页需要)。 */
 export interface Preferences {
   auto_update: boolean;
   local_version: string;
+  /** 当前在线状态:online / away / busy / dnd */
+  status: string;
+  /** 发送方向限速(字节/秒;0 = 不限速) */
+  send_limit_bytes: number;
+  /** 数据目录(可一键打开) */
+  data_dir: string;
+  /** 日志目录(排查问题时用) */
+  log_dir: string;
+  /** 当前 TCP 监听端口 */
+  listen_port: number;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
 
 export const setAutoUpdate = (enabled: boolean) =>
   invoke<void>("set_auto_update", { enabled });
+
+/** 设置在线状态(online / away / busy / dnd)并立即广播。 */
+export const setStatus = (status: string) => invoke<void>("set_status", { status });
+
+/** 设置发送方向限速(字节/秒;0 = 不限速)。 */
+export const setTransferLimit = (bytesPerSec: number) =>
+  invoke<void>("set_transfer_limit", { bytesPerSec });
+
+/** 手动探测:向指定 IP(或 ip:端口)定向发一次通告。 */
+export const probePeer = (target: string) => invoke<string>("probe_peer", { target });
+
+/** 添加 Windows 防火墙入站放行规则(会弹 UAC)。 */
+export const addFirewallRules = () => invoke<string>("add_firewall_rules");
 
 /** 向对端索取更新包(对端版本更高时会自动回发,接收后触发 update_ready)。 */
 export const requestUpdate = (nodeId: string) =>
@@ -211,3 +234,9 @@ export const getPeerAvatar = (nodeId: string) =>
 /** 从"最近会话"移除一条(聊天记录与联系人保留)。 */
 export const deleteConversation = (peer: string) =>
   invoke<boolean>("delete_conversation", { peer });
+
+/** 发送窗口抖动(飞秋经典功能;target 可为 NodeId 或 `group:...`)。 */
+export const sendShake = (target: string) => invoke<void>("send_shake", { target });
+
+/** 本地删除一条历史消息(只删本机)。 */
+export const deleteMessage = (id: string) => invoke<boolean>("delete_message", { id });

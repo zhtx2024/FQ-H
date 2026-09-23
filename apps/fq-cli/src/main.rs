@@ -658,6 +658,9 @@ async fn event_printer(
             AppEvent::PeerAvatarRemoved { node_id } => {
                 eprintln!("[AVATAR] {node_id} 已移除头像,本地缓存清理");
             }
+            AppEvent::Shaken { from } => {
+                eprintln!("[SHAKE] {from} 抖了你一下");
+            }
             AppEvent::UpdateReady {
                 from,
                 version,

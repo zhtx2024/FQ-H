@@ -38,6 +38,8 @@ export interface ChatMessage {
   read: boolean;
   /** 发送状态:pending / sent / delivered / read */
   status?: string;
+  /** 发送方 NodeId(群聊里显示是谁发的) */
+  from_node?: string;
 }
 
 export interface SendResult {
@@ -79,7 +81,9 @@ export type FqEvent =
   // 头像:某对端头像已更新(前端应重新拉取)
   | { type: "peer_avatar"; node_id: string }
   // 头像:某对端已移除头像(前端清掉展示)
-  | { type: "peer_avatar_removed"; node_id: string };
+  | { type: "peer_avatar_removed"; node_id: string }
+  // 窗口抖动:对端抖了我一下(前端晃动窗口 + 留一条提示)
+  | { type: "shaken"; from: string; from_name: string };
 
 export interface SpeedSample {
   t: number;
@@ -98,6 +102,30 @@ export interface TransferItem {
   finished_at: number | null;
   /** 速度采样窗口(滑窗计算 MB/s) */
   samples: SpeedSample[];
+}
+
+/** 头像兜底首字(参考 whisper:取首个字符)。 */
+export function initials(name: string): string {
+  return name.trim().slice(0, 1).toUpperCase() || "?";
+}
+
+/** 按稳定种子(如 NodeId)取一个头像底色,便于在列表里区分不同联系人。 */
+const AVATAR_COLORS = [
+  "#00A4FF",
+  "#36CFC9",
+  "#597EF7",
+  "#9254DE",
+  "#F759AB",
+  "#FF7A45",
+  "#73D13D",
+];
+
+export function avatarColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
 }
 
 /** 速度(MB/s):取窗口内首尾差分。 */

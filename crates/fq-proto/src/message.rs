@@ -420,6 +420,14 @@ pub struct UpdateRequest {
     pub requester_host: Option<String>,
 }
 
+/// 窗口抖动(飞秋/IPMSG 的经典功能:提醒对方注意)。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ShakeBody {
+    /// 附带说明(可选)。
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// 头像内容(整图一次发完;接收方**必须**校验 SHA-256)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvatarPayload {
@@ -549,6 +557,8 @@ pub enum Kind {
     Ack(AckBody),
     /// 正在输入。
     Typing(TypingBody),
+    /// 窗口抖动(飞秋经典功能;老版本会忽略,不影响兼容)。
+    Shake(ShakeBody),
     /// 文件要约。
     FileOffer(FileOffer),
     /// 更新包要约(接收方自动接收并走安装流程)。
@@ -584,6 +594,7 @@ impl Kind {
             Kind::Text(_) => "text",
             Kind::Ack(_) => "ack",
             Kind::Typing(_) => "typing",
+            Kind::Shake(_) => "shake",
             Kind::FileOffer(_) => "file_offer",
             Kind::UpdateOffer(_) => "update_offer",
             Kind::UpdateRequest(_) => "update_request",

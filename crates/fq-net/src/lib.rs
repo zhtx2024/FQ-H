@@ -230,6 +230,8 @@ pub struct NodeConfig {
     pub app_version: Option<String>,
     /// 头像内容 SHA-256(hex;随通告广播,空表示无头像)。
     pub avatar_sha256: Option<String>,
+    /// 发送方向限速(字节/秒;0 = 不限速)。
+    pub send_limit_bytes: u64,
 }
 
 impl NodeConfig {
@@ -253,6 +255,7 @@ impl NodeConfig {
             auto_accept_files: true,
             app_version: None,
             avatar_sha256: None,
+            send_limit_bytes: 0,
         }
     }
 }
@@ -285,6 +288,7 @@ struct Shared {
     auto_accept_files: bool,
     /// 软件版本(随通告广播)。
     app_version: Option<String>,
+    send_limit_bytes: std::sync::atomic::AtomicU64,
     /// 头像内容哈希(变更后重新通告,对端据此拉取)。
     avatar_sha256: Mutex<Option<String>>,
     /// 所有派生任务(连接读写、传输驱动)的中止句柄注册表:
@@ -368,6 +372,7 @@ impl Node {
             auto_accept_files,
             app_version,
             avatar_sha256,
+            send_limit_bytes,
         } = config;
 
         let identity_public = identity.public_key();
@@ -406,6 +411,7 @@ impl Node {
             download_dir: std::sync::RwLock::new(download_dir),
             auto_accept_files,
             app_version,
+            send_limit_bytes: std::sync::atomic::AtomicU64::new(send_limit_bytes),
             avatar_sha256: Mutex::new(avatar_sha256),
             spawned_tasks: Mutex::new(Vec::new()),
         });
@@ -459,6 +465,22 @@ impl NodeHandle {
     /// 本节点软件版本(随通告广播,可为 None)。
     pub fn app_version(&self) -> Option<String> {
         self.shared.app_version.clone()
+    }
+
+    /// 设置发送方向限速(字节/秒;0 = 不限速)。仅影响从此节点发出的文件分块。
+    pub fn set_send_limit(&self, bytes_per_sec: u64) {
+        self.shared
+            .send_limit_bytes
+            .store(bytes_per_sec, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 向指定地址定向发一次通告(手动探测:对方若首次见我们会立即回发,从而互相发现)。
+    ///
+    /// `target` 应为对方的**发现端口**(默认 `24250`)。
+    pub async fn announce_to(&self, target: SocketAddr) {
+        if let Ok(bytes) = self.shared.build_announce(PresenceEvent::Announce) {
+            self.shared.discovery.announce_to(&bytes, target).await;
+        }
     }
 
     /// 更新本节点头像哈希并立即通告(对端据此拉取新头像)。
@@ -620,6 +642,15 @@ impl NodeHandle {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         (profile.display_name.clone(), profile.group.clone())
+    }
+
+    /// 当前在线状态。
+    pub fn status(&self) -> fq_proto::PresenceStatus {
+        self.shared
+            .profile
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .status
     }
 
     /// 发送文本消息,返回消息 ID。

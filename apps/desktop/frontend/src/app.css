@@ -1380,7 +1380,7 @@ body {
   overflow: hidden;
   flex-shrink: 0;
 }
-.avatar-actions { display: flex; gap: 8px; }
+.avatar-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .wx-btn-small {
   border: 1px solid #DCDCDC;
   background: #F7F7F7;
@@ -1393,10 +1393,21 @@ body {
   width: auto;
   margin: 0;
   transition: background 0.12s;
+  /* 窄容器里不允许被压缩/换行:文字换行配固定高度会溢出按钮(踩过) */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .wx-btn-small:hover { background: #EDEDED; border-color: #D0D0D0; }
 .wx-btn-small.ghost:hover { color: var(--danger); border-color: #F5C2C2; background: #FDF2F2; }
-.avatar-hint { font-size: 11.5px; color: var(--text-2); }
+.avatar-hint { font-size: 11.5px; color: var(--text-2); flex: 1; min-width: 0; }
+
+/* 所有胶囊/小按钮统一防换行(固定高度的按钮里换行会溢出文字) */
+.wx-pill,
+.wx-btn-primary,
+.update-actions button,
+.pc-actions button {
+  white-space: nowrap;
+}
 
 /* ── 传输历史抽屉 ─────────────────── */
 .history-drawer {
@@ -1648,3 +1659,222 @@ body {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   借鉴 whisper(轻语)的界面设计:头像兜底配色 / 资料卡 / 图片灯箱 /
+   消息右键菜单 / 转发 / 窗口抖动
+   ══════════════════════════════════════════════════════════════ */
+
+/* 头像:圆形变体 + 可点击 */
+.avatar.round { border-radius: 50%; }
+.avatar[role="button"], .msg-avatar[role="button"] { cursor: pointer; }
+/* 消息行:头像 + 内容列(列内可放群聊发送者名) */
+.msg-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 62%;
+  min-width: 0;
+}
+.msg-row.mine .msg-col { align-items: flex-end; }
+.msg-col .msg-bubble { max-width: 100%; }
+.msg-sender { font-size: 11px; color: var(--text-2); margin-bottom: 3px; padding: 0 2px; }
+
+/* 窗口抖动提示(居中一行小字) */
+.msg-shake {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 8px;
+}
+.msg-shake span {
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+/* 窗口抖动动画(收到抖动时整个应用晃一下) */
+@keyframes fq-shake {
+  0%, 100% { transform: translate(0, 0); }
+  15% { transform: translate(-6px, 3px) rotate(-0.3deg); }
+  30% { transform: translate(5px, -4px) rotate(0.3deg); }
+  45% { transform: translate(-4px, 2px); }
+  60% { transform: translate(3px, -2px); }
+  75% { transform: translate(-2px, 1px); }
+}
+.app.shaking { animation: fq-shake 0.7s ease-in-out; }
+
+/* 资料卡 */
+.pc-mask { position: fixed; inset: 0; z-index: 70; }
+.profile-card {
+  position: fixed;
+  left: 68px;
+  top: 60px;
+  width: 300px;
+  z-index: 71;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  padding: 14px;
+  animation: drawer-in 0.14s ease-out;
+}
+.pc-head { display: flex; gap: 12px; align-items: flex-start; }
+.pc-meta { min-width: 0; flex: 1; }
+.pc-name { font-size: 15.5px; font-weight: 600; }
+.pc-sub { font-size: 11.5px; color: var(--text-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-sub.online { color: #07C160; }
+.pc-id {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 5px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.pc-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.pc-actions button {
+  flex: 1;
+  min-width: 76px;
+  height: 30px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 5px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.pc-actions button:hover { filter: brightness(0.97); }
+.pc-actions .pc-primary { background: #07C160; border-color: #07C160; color: #fff; font-weight: 500; }
+
+/* 图片灯箱 */
+.lightbox-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.86);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.lightbox-head {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  color: #f0f0f0;
+  font-size: 13px;
+  background: linear-gradient(rgba(0,0,0,0.55), transparent);
+}
+.lightbox-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lightbox-actions { display: flex; align-items: center; gap: 8px; }
+.lightbox-actions button {
+  background: rgba(255,255,255,0.14);
+  border: none;
+  color: #fff;
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.lightbox-actions button:hover { background: rgba(255,255,255,0.24); }
+.lightbox-close { font-size: 20px !important; line-height: 1 !important; padding: 2px 10px !important; }
+.lightbox-image {
+  max-width: 92vw;
+  max-height: 84vh;
+  border-radius: 6px;
+  cursor: grab;
+  transition: transform 0.06s linear;
+  user-select: none;
+}
+.lightbox-loading { color: #bbb; font-size: 13px; }
+.lightbox-hint {
+  position: absolute;
+  bottom: 14px;
+  color: rgba(255,255,255,0.6);
+  font-size: 11.5px;
+}
+
+/* 转发对话框 */
+.modal.forward { width: 420px; }
+.forward-preview {
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  max-height: 72px;
+  overflow: hidden;
+}
+.forward-list { max-height: 320px; overflow-y: auto; }
+.forward-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.forward-item:hover { background: var(--panel-2); }
+.forward-name { font-size: 13.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.forward-sub { font-size: 11px; color: var(--text-2); }
+
+/* 消息气泡头像:图片撑满方框(与 .avatar img 一致,防止未约束时撑破布局) */
+.msg-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  display: block;
+}
+
+/* ── 通用设置页(参考 whisper 的两行说明式 + 分段选择)── */
+.wx-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #F0F0F0;
+}
+@media (prefers-color-scheme: dark) { .wx-block { border-bottom-color: #262626; } }
+.set-label { display: flex; flex-direction: column; gap: 3px; }
+.set-label > span:first-child { font-size: 13.5px; color: var(--text); }
+.set-note { font-size: 11.5px; color: var(--text-2); line-height: 1.6; }
+.set-note.mono { font-family: Consolas, monospace; font-size: 11px; word-break: break-all; }
+.probe-hint { color: #07C160; }
+.wx-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.wx-pill {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12.5px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 15px;
+  cursor: pointer;
+  transition: all 0.12s;
+  /* 旧弹窗默认规则里有 width:100%/margin-top,分段按钮必须显式覆盖 */
+  width: auto;
+  margin: 0;
+}
+.wx-pill:hover { border-color: #07C160; color: #07C160; }
+.wx-pill.active {
+  background: #07C160;
+  border-color: #07C160;
+  color: #fff;
+  font-weight: 500;
+}
+.probe-row { display: flex; gap: 8px; align-items: center; }
+.probe-row .wx-row-input { flex: 1; min-width: 0; }
+.path-note { margin-top: 2px; }

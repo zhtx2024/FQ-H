@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import * as api from "./api";
 import type {
   ChatMessage,
@@ -9,7 +10,7 @@ import type {
   Toast,
   TransferItem,
 } from "./types";
-import { fmtBytes, transferSpeed } from "./types";
+import { avatarColor, fmtBytes, initials, transferSpeed } from "./types";
 import EMOJI_GROUPS from "./emoji";
 
 function formatTime(tsMs: number): string {
@@ -99,6 +100,64 @@ function ImageThumb({ path, name }: { path: string; name: string }) {
   return <img src={src} alt={name} className="chat-image" loading="lazy" />;
 }
 
+/** 灯箱里的大图:读原图 base64,支持滚轮缩放与拖动查看。 */
+function LightboxImage({ path }: { path: string }) {
+  const [src, setSrc] = useState<string | null>(imageCache.get(path) ?? null);
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+
+  useEffect(() => {
+    if (src) return;
+    let disposed = false;
+    api
+      .readImageBase64(path)
+      .then((base64) => {
+        if (disposed) return;
+        const dataUrl = `data:image/png;base64,${base64}`;
+        imageCache.set(path, dataUrl);
+        setSrc(dataUrl);
+      })
+      .catch(() => {
+        if (!disposed) setSrc(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [path, src]);
+
+  if (!src) return <div className="lightbox-loading">图片读取中…</div>;
+  return (
+    <img
+      src={src}
+      alt=""
+      draggable={false}
+      className="lightbox-image"
+      style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
+      onWheel={(e) => {
+        e.preventDefault();
+        setZoom((z) => Math.min(6, Math.max(1, z - e.deltaY * 0.0015)));
+      }}
+      onMouseDown={(e) => {
+        e.preventDefault();
+        drag.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+      }}
+      onMouseMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        setOffset({ x: d.ox + (e.clientX - d.x), y: d.oy + (e.clientY - d.y) });
+      }}
+      onMouseUp={() => (drag.current = null)}
+      onMouseLeave={() => (drag.current = null)}
+      onDoubleClick={() => {
+        setZoom((z) => (z > 1 ? 1 : 2));
+        setOffset({ x: 0, y: 0 });
+      }}
+      onClick={(e) => e.stopPropagation()}
+    />
+  );
+}
+
 /** 版本号比较(数字分段;段数不足补 0)。 */
 function versionCompare(a: string, b: string): number {
   const parse = (s: string) => s.split(/[.\-+]/).map((p) => parseInt(p, 10) || 0);
@@ -119,15 +178,42 @@ const currentVersion = __APP_VERSION__;
 function AvatarBubble({
   url,
   fallback,
+  seed,
+  base = "avatar",
   className = "",
+  size,
+  round = false,
+  onClick,
+  title,
 }: {
   url?: string;
   fallback: string;
+  /** 兜底配色的种子(一般传 NodeId,保证同一人颜色稳定)。 */
+  seed?: string;
+  /** 基础类名(列表用 `avatar`,消息气泡用 `msg-avatar`)。 */
+  base?: string;
   className?: string;
+  size?: number;
+  round?: boolean;
+  onClick?: () => void;
+  title?: string;
 }) {
+  const style: CSSProperties = size
+    ? { width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.42)) }
+    : {};
+  if (!url) {
+    // 没有头像图片时,用"按种子派生的颜色 + 首字"兜底(参考 whisper 的 UserAvatar)
+    style.background = avatarColor(seed || fallback);
+  }
   return (
-    <div className={`avatar ${className}`}>
-      {url ? <img src={url} alt="" draggable={false} /> : fallback.slice(0, 1)}
+    <div
+      className={`avatar ${base} ${round ? "round" : ""} ${className}`.trim()}
+      style={style}
+      onClick={onClick}
+      title={title}
+      role={onClick ? "button" : undefined}
+    >
+      {url ? <img src={url} alt="" draggable={false} /> : initials(fallback)}
     </div>
   );
 }
@@ -174,7 +260,9 @@ export default function App() {
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiTab, setEmojiTab] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"profile" | "files" | "identity" | "about">("profile");
+  const [settingsTab, setSettingsTab] = useState<
+    "general" | "profile" | "files" | "identity" | "about"
+  >("general");
   const [versionReport, setVersionReport] = useState<api.VersionReport | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [transferPanelOpen, setTransferPanelOpen] = useState(true);
@@ -194,6 +282,28 @@ export default function App() {
   const [autoUpdate, setAutoUpdate] = useState(false);
   /** 对端头像缓存(node_id → data URL)。 */
   const [avatars, setAvatars] = useState<Record<string, string>>({});
+  /** 资料卡:点联系人/消息头像弹出(参考 whisper 的 ProfileCard)。 */
+  const [profileCard, setProfileCard] = useState<{ self: boolean; nodeId?: string } | null>(null);
+  /** 图片灯箱(点图片放大查看)。 */
+  const [lightbox, setLightbox] = useState<{ path: string; name: string; title: string } | null>(
+    null,
+  );
+  /** 消息右键菜单。 */
+  const [msgMenu, setMsgMenu] = useState<{ x: number; y: number; msg: ChatMessage } | null>(null);
+  /** 待转发的消息(弹出目标选择)。 */
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  /** 收到抖动时给窗口加抖动动画 + 抖动节流(同会话 1.5s 一次,防"抖动炸弹")。 */
+  const [shaking, setShaking] = useState(false);
+  const shakeCooldownRef = useRef<Record<string, number>>({});
+  /** 通用设置(在线状态 / 限速 / 目录等)。 */
+  const [prefs, setPrefs] = useState<api.Preferences | null>(null);
+  const [probeInput, setProbeInput] = useState("");
+  const [probeHint, setProbeHint] = useState("");
+
+  /** 打开资料卡:`nodeId` 为空表示自己。 */
+  const openProfileCard = useCallback((nodeId?: string) => {
+    setProfileCard(nodeId ? { self: false, nodeId } : { self: true });
+  }, []);
   const avatarLoadingRef = useRef<Set<string>>(new Set());
   /** 折叠分区(最近会话 / 群聊),持久化到 localStorage。 */
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(() => {
@@ -350,13 +460,75 @@ export default function App() {
     }
   }, [pendingInstall, pushToast]);
 
-  /** 读取偏好设置(自动更新开关)。 */
+  /** 读取偏好设置(自动更新开关 + 通用设置)。 */
   const refreshPreferences = useCallback(() => {
     api
       .getPreferences()
-      .then((p) => setAutoUpdate(p.auto_update))
+      .then((p) => {
+        setPrefs(p);
+        setAutoUpdate(p.auto_update);
+      })
       .catch((e) => console.error("读取偏好设置失败", e));
   }, []);
+
+  /** 切换在线状态(立即广播)。 */
+  const doSetStatus = useCallback(
+    async (status: string) => {
+      try {
+        await api.setStatus(status);
+        setPrefs((p) => (p ? { ...p, status } : p));
+        const label =
+          status === "online"
+            ? "在线"
+            : status === "busy"
+              ? "忙碌"
+              : status === "dnd"
+                ? "勿扰"
+                : "离开";
+        pushToast("info", `在线状态已切换为「${label}」`);
+      } catch (e) {
+        pushToast("error", `设置状态失败:${String(e)}`);
+      }
+    },
+    [pushToast],
+  );
+
+  /** 设置发送限速。 */
+  const doSetLimit = useCallback(
+    async (bytes: number) => {
+      try {
+        await api.setTransferLimit(bytes);
+        setPrefs((p) => (p ? { ...p, send_limit_bytes: bytes } : p));
+        pushToast(
+          "info",
+          bytes > 0 ? `发送限速已设为 ${Math.round(bytes / 1024 / 1024)} MB/s` : "已取消发送限速",
+        );
+      } catch (e) {
+        pushToast("error", `设置限速失败:${String(e)}`);
+      }
+    },
+    [pushToast],
+  );
+
+  /** 手动探测对方 IP(定向握手,解决"搜不到同伴")。 */
+  const doProbe = useCallback(async () => {
+    try {
+      const message = await api.probePeer(probeInput);
+      setProbeHint(message);
+      pushToast("info", message);
+    } catch (e) {
+      pushToast("error", `探测失败:${String(e)}`);
+    }
+  }, [probeInput, pushToast]);
+
+  /** 一键放行 Windows 防火墙(会弹 UAC)。 */
+  const doFirewall = useCallback(async () => {
+    try {
+      pushToast("info", await api.addFirewallRules());
+    } catch (e) {
+      pushToast("error", `添加放行规则失败:${String(e)}`);
+    }
+  }, [pushToast]);
 
   /** 静默版本检查(后台轮询用,不弹提示)。 */
   const silentCheckUpdate = useCallback(async () => {
@@ -487,6 +659,98 @@ export default function App() {
         );
       } catch (e) {
         pushToast("error", `删除联系人失败:${String(e)}`);
+      }
+    },
+    [selected, pushToast],
+  );
+
+  /** 抖一抖(单聊或群聊;飞秋经典功能)。 */
+  const doSendShake = useCallback(
+    async (target: string) => {
+      // 节流:同一会话 1.5s 内只发一次,避免"抖动炸弹"
+      const now = Date.now();
+      if (now - (shakeCooldownRef.current[target] ?? 0) < 1500) {
+        pushToast("info", "别抖了,稍等一下下 😄");
+        return;
+      }
+      shakeCooldownRef.current[target] = now;
+      try {
+        await api.sendShake(target);
+        // 本地也留一条提示(历史由后端落库)
+        setMessages((all) => {
+          const list = all[target] ?? [];
+          const hint: ChatMessage = {
+            id: `shake-local-${Date.now()}`,
+            outgoing: true,
+            kind: "shake",
+            body: null,
+            ts_ms: Date.now(),
+            delivered: false,
+            read: false,
+            from_node: self?.node_id,
+          };
+          return { ...all, [target]: [...list, hint] };
+        });
+        pushToast("info", "已发送窗口抖动");
+      } catch (e) {
+        pushToast("error", `抖动发送失败:${String(e)}`);
+      }
+    },
+    [pushToast, self?.node_id],
+  );
+
+  /** 复制消息文本。 */
+  const doCopyMessage = useCallback(
+    async (m: ChatMessage) => {
+      const text = m.body ?? "";
+      if (!text.trim()) {
+        pushToast("info", "这条消息没有可复制的文本");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(text);
+        pushToast("info", "已复制到剪贴板");
+      } catch {
+        pushToast("error", "复制失败(剪贴板不可用)");
+      }
+    },
+    [pushToast],
+  );
+
+  /** 转发消息:文本重发文本,图片/文件重发本地文件。 */
+  const doForwardTo = useCallback(
+    async (m: ChatMessage, target: string) => {
+      setForwarding(null);
+      try {
+        if (m.kind === "text") {
+          if (target.startsWith("group:")) await api.sendGroupText(target, m.body ?? "");
+          else await api.sendText(target, m.body ?? "");
+        } else {
+          const info = JSON.parse(m.body ?? "{}") as { p?: string };
+          if (!info.p) throw new Error("找不到本地文件路径(可能已被删除)");
+          await api.sendFileTo(target, info.p);
+        }
+        pushToast("info", "已转发");
+      } catch (e) {
+        pushToast("error", `转发失败:${String(e)}`);
+      }
+    },
+    [pushToast],
+  );
+
+  /** 删除一条消息(仅本机)。 */
+  const doDeleteMessage = useCallback(
+    async (m: ChatMessage) => {
+      try {
+        await api.deleteMessage(m.id);
+        setMessages((all) => {
+          const key = selected ?? "";
+          const list = all[key] ?? [];
+          return { ...all, [key]: list.filter((x) => x.id !== m.id) };
+        });
+        pushToast("info", "已删除本条消息(仅本机)");
+      } catch (e) {
+        pushToast("error", `删除失败:${String(e)}`);
       }
     },
     [selected, pushToast],
@@ -882,6 +1146,8 @@ export default function App() {
         ]);
         break;
       case "file_progress": {
+        // 有进度说明对方已接受:把可能还挂着的确认弹窗收掉
+        setOffers((list) => (list.some((o) => o.token === event.token) ? list.filter((o) => o.token !== event.token) : list));
         const now = Date.now();
         setTransfers((t) => {
           const cur = t[event.token] ?? {
@@ -917,6 +1183,7 @@ export default function App() {
       case "file_done":
         break;
       case "file_completed":
+        setOffers((list) => list.filter((o) => o.token !== event.token));
         finishTransfer(event.token, null);
         break;
       case "file_failed":
@@ -970,6 +1237,28 @@ export default function App() {
           delete next[event.node_id];
           return next;
         });
+        break;
+      }
+      case "shaken": {
+        // 对端抖了我一下:晃窗口 + 留下一条提示(历史由后端落库)
+        setShaking(true);
+        window.setTimeout(() => setShaking(false), 700);
+        pushToast("info", `${event.from_name} 抖了你一下`);
+        setMessages((all) => {
+          const list = all[event.from] ?? [];
+          const hint: ChatMessage = {
+            id: `shake-local-${Date.now()}`,
+            outgoing: false,
+            kind: "shake",
+            body: null,
+            ts_ms: Date.now(),
+            delivered: false,
+            read: false,
+            from_node: event.from,
+          };
+          return { ...all, [event.from]: [...list, hint] };
+        });
+        refreshConversations();
         break;
       }
       case "trust_warning":
@@ -1238,7 +1527,10 @@ export default function App() {
       <AvatarBubble
         url={avatars[peer.node_id]}
         fallback={peer.name}
+        seed={peer.node_id}
         className={peer.online ? "" : "offline"}
+        title="查看资料"
+        onClick={() => openProfileCard(peer.node_id)}
       />
       <div className="peer-meta">
         <div className="peer-name">
@@ -1280,7 +1572,7 @@ export default function App() {
     });
 
   return (
-    <div className="app">
+    <div className={`app ${shaking ? "shaking" : ""}`}>
       {/* ── 图标栏(QQ 三栏的第一栏)── */}
       <nav className="rail">
         <div
@@ -1370,6 +1662,7 @@ export default function App() {
                         <AvatarBubble
                           url={isGroupConv ? undefined : avatars[conv.peer]}
                           fallback={isGroupConv ? "群" : label}
+                          seed={conv.peer}
                           className={isGroupConv ? "group-avatar" : online ? "" : "offline"}
                         />
                         <div className="peer-meta">
@@ -1478,7 +1771,10 @@ export default function App() {
                 <AvatarBubble
                   url={avatars[selectedPeer.node_id]}
                   fallback={selectedPeer.name}
+                  seed={selectedPeer.node_id}
                   className="header-avatar"
+                  title="查看资料"
+                  onClick={() => openProfileCard(selectedPeer.node_id)}
                 />
               )}
               <span className="chat-title">
@@ -1493,6 +1789,13 @@ export default function App() {
                     ? "在线"
                     : "离线(消息将入队)"}
               </span>
+              <button
+                className="header-btn"
+                title="抖一抖(飞秋经典:提醒对方注意)"
+                onClick={() => selected && void doSendShake(selected)}
+              >
+                👋
+              </button>
               <button
                 className={`header-btn ${showSearch ? "active" : ""}`}
                 title="搜索历史消息"
@@ -1560,9 +1863,16 @@ export default function App() {
                 const prev = i > 0 ? currentMessages[i - 1] : null;
                 const showDivider = shouldShowDivider(prev, m);
                 const isMine = m.outgoing;
-                const avatarChar = isMine
-                  ? (self?.name ?? "?").slice(0, 1)
-                  : (selectedPeer?.name ?? "?").slice(0, 1);
+                // 头像:自己用本机头像;对端用缓存头像;都没有则按 NodeId 配色首字
+                const avatarId = isMine ? self?.node_id : m.from_node ?? selected ?? undefined;
+                const avatarName = isMine
+                  ? self?.name ?? "我"
+                  : peers.find((p) => p.node_id === m.from_node)?.name ??
+                    selectedPeer?.name ??
+                    selectedEntity?.name ??
+                    "对方";
+                const avatarUrl = isMine ? self?.avatar ?? undefined : avatarId ? avatars[avatarId] : undefined;
+                const showSender = Boolean(selectedEntity?.isGroup) && !isMine;
 
                 // 文件/图片消息:特殊气泡
                 let fileInfo: { n: string; s: number; p: string; i: boolean } | null = null;
@@ -1580,66 +1890,87 @@ export default function App() {
                       <div className="time-divider">{formatDivider(m.ts_ms)}</div>
                     )}
 
-                    {fileInfo ? (
-                      /* ── 文件/图片气泡(微信风格)── */
-                      <div className={`msg-row ${isMine ? "mine" : "theirs"}`}>
-                        <div className={`msg-avatar ${isMine ? "mine" : "theirs"}`}>
-                          {avatarChar}
-                        </div>
-                        {fileInfo.i ? (
-                          /* 图片:缩略图预览 */
-                          <div
-                            className="msg-image-bubble"
-                            onClick={() => void handleImageClick(fileInfo!.p)}
-                            title={fileInfo.n}
-                          >
-                            <ImageThumb path={fileInfo.p} name={fileInfo.n} />
-                          </div>
-                        ) : (
-                          /* 文件:文件信息卡片 */
-                          <div
-                            className="msg-file-bubble"
-                            onClick={() => void handleImageClick(fileInfo!.p)}
-                            title="点击打开文件"
-                          >
-                            <div className="file-icon-large">📄</div>
-                            <div className="file-info">
-                              <div className="file-name-text">{fileInfo.n}</div>
-                              <div className="file-size-text">{fmtBytes(fileInfo.s)}</div>
-                            </div>
-                            <div className="file-open">📂</div>
-                          </div>
-                        )}
+                    {m.kind === "shake" ? (
+                      /* ── 窗口抖动提示(参考 whisper:居中一行小字)── */
+                      <div className="msg-shake">
+                        <span>{isMine ? "👋 你抖了对方一下" : `👋 ${avatarName} 抖了你一下`}</span>
                       </div>
                     ) : (
-                      /* ── 文本消息(微信风格气泡)── */
-                      <div className={`msg-row ${isMine ? "mine" : "theirs"}`}>
-                        <div className={`msg-avatar ${isMine ? "mine" : "theirs"}`}>
-                          {avatarChar}
-                        </div>
-                        <div className="msg-bubble" title={formatTime(m.ts_ms)}>
-                          <div className="msg-body">{m.body ?? `<${m.kind}>`}</div>
-                          {isMine && (
-                            <span
-                              className={`msg-status ${m.status === "pending" ? "pending" : ""}`}
-                              title={
-                                m.status === "pending"
-                                  ? "对方离线,消息已入队待补发"
-                                  : m.read
-                                    ? "已读"
-                                    : m.delivered
-                                      ? "已送达"
-                                      : "已发送"
-                              }
-                            >
-                              {m.status === "pending"
-                                ? "🕓"
-                                : m.read
-                                  ? "✓✓"
-                                  : m.delivered
-                                    ? "✓"
-                                    : ""}
-                            </span>
+                      <div
+                        className={`msg-row ${isMine ? "mine" : "theirs"}`}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setMsgMenu({ x: e.clientX, y: e.clientY, msg: m });
+                        }}
+                      >
+                        <AvatarBubble
+                          base="msg-avatar"
+                          className={isMine ? "mine" : "theirs"}
+                          url={avatarUrl}
+                          fallback={avatarName}
+                          seed={avatarId}
+                          title="查看资料"
+                          onClick={() => openProfileCard(isMine ? undefined : avatarId)}
+                        />
+                        <div className="msg-col">
+                          {showSender && <div className="msg-sender">{avatarName}</div>}
+                          {fileInfo ? (
+                            fileInfo.i ? (
+                              /* 图片:缩略图预览 → 点击放大(灯箱) */
+                              <div
+                                className="msg-image-bubble"
+                                onClick={() =>
+                                  setLightbox({
+                                    path: fileInfo!.p,
+                                    name: fileInfo!.n,
+                                    title: `${avatarName} · ${formatTime(m.ts_ms)}`,
+                                  })
+                                }
+                                title={`${fileInfo.n}(点击放大)`}
+                              >
+                                <ImageThumb path={fileInfo.p} name={fileInfo.n} />
+                              </div>
+                            ) : (
+                              /* 文件:文件信息卡片 */
+                              <div
+                                className="msg-file-bubble"
+                                onClick={() => void handleImageClick(fileInfo!.p)}
+                                title="点击打开文件"
+                              >
+                                <div className="file-icon-large">📄</div>
+                                <div className="file-info">
+                                  <div className="file-name-text">{fileInfo.n}</div>
+                                  <div className="file-size-text">{fmtBytes(fileInfo.s)}</div>
+                                </div>
+                                <div className="file-open">📂</div>
+                              </div>
+                            )
+                          ) : (
+                            <div className="msg-bubble" title={formatTime(m.ts_ms)}>
+                              <div className="msg-body">{m.body ?? `<${m.kind}>`}</div>
+                              {isMine && (
+                                <span
+                                  className={`msg-status ${m.status === "pending" ? "pending" : ""}`}
+                                  title={
+                                    m.status === "pending"
+                                      ? "对方离线,消息已入队待补发"
+                                      : m.read
+                                        ? "已读"
+                                        : m.delivered
+                                          ? "已送达"
+                                          : "已发送"
+                                  }
+                                >
+                                  {m.status === "pending"
+                                    ? "🕓"
+                                    : m.read
+                                      ? "✓✓"
+                                      : m.delivered
+                                        ? "✓"
+                                        : ""}
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1913,6 +2244,226 @@ export default function App() {
         </div>
       )}
 
+      {/* ── 图片灯箱(点图片放大查看)── */}
+      {lightbox && (
+        <div className="lightbox-mask" onClick={() => setLightbox(null)}>
+          <div className="lightbox-head">
+            <span className="lightbox-title">{lightbox.title}</span>
+            <div className="lightbox-actions">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void api.openFile(lightbox.path);
+                }}
+              >
+                用系统程序打开
+              </button>
+              <button className="lightbox-close" onClick={() => setLightbox(null)}>
+                ×
+              </button>
+            </div>
+          </div>
+          <LightboxImage path={lightbox.path} />
+          <div className="lightbox-hint">滚轮缩放 · 双击 1x/2x · 拖动查看 · 点击空白关闭</div>
+        </div>
+      )}
+
+      {/* ── 资料卡(点联系人或消息头像弹出,参考 whisper 的 ProfileCard)── */}
+      {profileCard &&
+        (() => {
+          const peer = profileCard.self
+            ? null
+            : peers.find((p) => p.node_id === profileCard.nodeId) ?? null;
+          const nodeId = profileCard.self ? self?.node_id : profileCard.nodeId;
+          const name = profileCard.self
+            ? self?.name ?? "我"
+            : peer?.name ?? `${shortId(profileCard.nodeId ?? "")}…`;
+          const avatarUrl = profileCard.self
+            ? self?.avatar ?? undefined
+            : nodeId
+              ? avatars[nodeId]
+              : undefined;
+          const group = profileCard.self ? self?.group : peer?.group;
+          const ips = profileCard.self ? self?.local_ips ?? [] : peer?.ips ?? [];
+          const appVersion = profileCard.self ? currentVersion : peer?.app_version ?? null;
+          const online = profileCard.self ? true : peer?.online ?? false;
+          return (
+            <>
+              <div className="pc-mask" onClick={() => setProfileCard(null)} />
+              <div className="profile-card">
+                <div className="pc-head">
+                  <AvatarBubble
+                    url={avatarUrl}
+                    fallback={name}
+                    seed={nodeId}
+                    size={56}
+                    round
+                    className={online ? "" : "offline"}
+                  />
+                  <div className="pc-meta">
+                    <div className="pc-name">{name}</div>
+                    <div className={`pc-sub ${online ? "online" : ""}`}>
+                      {profileCard.self ? "本机" : online ? "在线" : "离线"}
+                      {group ? ` · ${group}` : ""}
+                    </div>
+                    <div className="pc-sub mono" title={ips.join("\n")}>
+                      {ips.length ? ips.join("  ·  ") : "IP 未知"}
+                    </div>
+                    {appVersion && <div className="pc-sub">版本 v{appVersion}</div>}
+                  </div>
+                </div>
+                <div className="pc-id mono" title={nodeId}>
+                  {nodeId}
+                </div>
+                <div className="pc-actions">
+                  {profileCard.self ? (
+                    <>
+                      <button className="pc-primary" onClick={() => void doChooseAvatar()}>
+                        {self?.avatar ? "更换头像" : "上传头像"}
+                      </button>
+                      {self?.avatar && <button onClick={() => void doClearAvatar()}>移除</button>}
+                      <button
+                        onClick={() => {
+                          setProfileCard(null);
+                          openSettings();
+                        }}
+                      >
+                        打开设置
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        className="pc-primary"
+                        onClick={() => {
+                          if (nodeId) openPeer(nodeId);
+                          setProfileCard(null);
+                        }}
+                      >
+                        发消息
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (nodeId) void doSendShake(nodeId);
+                          setProfileCard(null);
+                        }}
+                      >
+                        👋 抖一抖
+                      </button>
+                      <button
+                        onClick={() => {
+                          void navigator.clipboard.writeText(nodeId ?? "");
+                          pushToast("info", "已复制 Node ID");
+                        }}
+                      >
+                        复制 ID
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+      {/* ── 消息右键菜单 ── */}
+      {msgMenu && (
+        <>
+          <div
+            className="context-mask"
+            onClick={() => setMsgMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMsgMenu(null);
+            }}
+          />
+          <div className="context-menu" style={{ left: msgMenu.x, top: msgMenu.y }}>
+            {msgMenu.msg.kind === "text" && (
+              <div
+                className="context-item"
+                onClick={() => {
+                  void doCopyMessage(msgMenu.msg);
+                  setMsgMenu(null);
+                }}
+              >
+                📋 复制文本
+              </div>
+            )}
+            <div
+              className="context-item"
+              onClick={() => {
+                setForwarding(msgMenu.msg);
+                setMsgMenu(null);
+              }}
+            >
+              ↗️ 转发到…
+            </div>
+            {selected && (
+              <div
+                className="context-item"
+                onClick={() => {
+                  void doSendShake(selected);
+                  setMsgMenu(null);
+                }}
+              >
+                👋 抖一抖
+              </div>
+            )}
+            <div className="context-sep" />
+            <div
+              className="context-item danger"
+              onClick={() => {
+                void doDeleteMessage(msgMenu.msg);
+                setMsgMenu(null);
+              }}
+            >
+              🗑️ 删除(仅本机)
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── 转发目标选择 ── */}
+      {forwarding && (
+        <div className="modal-mask" onClick={() => setForwarding(null)}>
+          <div className="modal forward" onClick={(e) => e.stopPropagation()}>
+            <h2>↗️ 转发消息</h2>
+            <div className="forward-preview">
+              {(forwarding.body ?? "").slice(0, 100) || "(非文本消息)"}
+            </div>
+            <div className="forward-list">
+              {groups.map((g) => (
+                <div
+                  key={g.id}
+                  className="forward-item"
+                  onClick={() => void doForwardTo(forwarding, g.id)}
+                >
+                  <div className="avatar group-avatar">群</div>
+                  <div className="forward-name">{g.name}</div>
+                  <div className="forward-sub">{g.member_count} 位成员</div>
+                </div>
+              ))}
+              {peers.map((p) => (
+                <div
+                  key={p.node_id}
+                  className="forward-item"
+                  onClick={() => void doForwardTo(forwarding, p.node_id)}
+                >
+                  <AvatarBubble
+                    url={avatars[p.node_id]}
+                    fallback={p.name}
+                    seed={p.node_id}
+                    className={p.online ? "" : "offline"}
+                  />
+                  <div className="forward-name">{p.name}</div>
+                  <div className="forward-sub">{p.online ? "在线" : "离线(入队)"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {offers.length > 0 &&
         offers.map((offer) => (
           <div className="modal-mask" key={offer.token}>
@@ -2104,6 +2655,7 @@ export default function App() {
               <nav className="wx-nav">
                 {(
                   [
+                    ["general", "通用"],
                     ["profile", "个人资料"],
                     ["files", "文件管理"],
                     ["identity", "身份信息"],
@@ -2128,18 +2680,137 @@ export default function App() {
             <section className="wx-settings-main">
               <header className="wx-main-head">
                 <span>
-                  {settingsTab === "profile"
-                    ? "个人资料"
-                    : settingsTab === "files"
-                      ? "文件管理"
-                      : settingsTab === "identity"
-                        ? "身份信息"
-                        : "关于与更新"}
+                  {settingsTab === "general"
+                    ? "通用"
+                    : settingsTab === "profile"
+                      ? "个人资料"
+                      : settingsTab === "files"
+                        ? "文件管理"
+                        : settingsTab === "identity"
+                          ? "身份信息"
+                          : "关于与更新"}
                 </span>
                 <button className="wx-close" onClick={() => setShowSettings(false)}>
                   ×
                 </button>
               </header>
+
+              {settingsTab === "general" && (
+                <div className="wx-rows">
+                  <div className="wx-block">
+                    <div className="set-label">
+                      <span>在线状态</span>
+                      <span className="set-note">对方的联系人列表里会显示这个状态(切立即广播)</span>
+                    </div>
+                    <div className="wx-pills">
+                      {(
+                        [
+                          ["online", "在线"],
+                          ["busy", "忙碌"],
+                          ["dnd", "勿扰"],
+                          ["away", "离开"],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          className={`wx-pill ${prefs?.status === value ? "active" : ""}`}
+                          onClick={() => void doSetStatus(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="wx-block">
+                    <div className="set-label">
+                      <span>文件传输限速</span>
+                      <span className="set-note">
+                        只作用于<b>发送</b>方向;接收速度由对端决定
+                      </span>
+                    </div>
+                    <div className="wx-pills">
+                      {(
+                        [
+                          [0, "不限速"],
+                          [1048576, "1 MB/s"],
+                          [5242880, "5 MB/s"],
+                          [10485760, "10 MB/s"],
+                        ] as const
+                      ).map(([bytes, label]) => (
+                        <button
+                          key={label}
+                          className={`wx-pill ${prefs?.send_limit_bytes === bytes ? "active" : ""}`}
+                          onClick={() => void doSetLimit(bytes)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="wx-block">
+                    <div className="set-label">
+                      <span>网络发现</span>
+                      <span className="set-note">
+                        默认通过广播 + 每网卡定向自动发现。若对方搜不到你,通常是 Windows
+                        防火墙拦截入站 —— 可一键放行;也可以直接填对方 IP 定向探测。
+                      </span>
+                    </div>
+                    <div className="probe-row">
+                      <input
+                        className="wx-row-input"
+                        placeholder="对方 IP(可带端口,如 192.168.1.8)"
+                        value={probeInput}
+                        onChange={(e) => setProbeInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void doProbe();
+                        }}
+                      />
+                      <button className="wx-btn-small" onClick={() => void doProbe()}>
+                        探测
+                      </button>
+                      <button
+                        className="wx-btn-small"
+                        title="需要管理员权限,会弹出 UAC 让确认"
+                        onClick={() => void doFirewall()}
+                      >
+                        放行防火墙
+                      </button>
+                    </div>
+                    {probeHint && <div className="set-note probe-hint">{probeHint}</div>}
+                  </div>
+
+                  <div className="wx-block">
+                    <div className="set-label">
+                      <span>数据与日志</span>
+                      <span className="set-note">
+                        聊天记录、身份密钥都在数据目录;出问题时日志是唯一线索
+                      </span>
+                    </div>
+                    <div className="probe-row">
+                      <button
+                        className="wx-btn-small"
+                        onClick={() => prefs && void api.openFile(prefs.data_dir)}
+                      >
+                        打开数据目录
+                      </button>
+                      <button
+                        className="wx-btn-small"
+                        onClick={() => prefs && void api.openFile(prefs.log_dir)}
+                      >
+                        打开日志目录
+                      </button>
+                    </div>
+                    {prefs && <div className="set-note mono path-note">{prefs.data_dir}</div>}
+                  </div>
+
+                  <div className="wx-hint">
+                    当前端口:UDP(发现)默认 24250,TCP 监听 {prefs?.listen_port ?? "—"}。
+                    同机运行两个实例时需在 profile.json 里错开端口。
+                  </div>
+                </div>
+              )}
 
               {settingsTab === "profile" && (
                 <div className="wx-rows">

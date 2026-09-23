@@ -547,12 +547,24 @@ async fn stream_entry(
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("传输已取消".into());
         }
+        let chunk_started = Instant::now();
         let size = file
             .read(&mut buf)
             .await
             .map_err(|e| format!("读取失败: {e}"))?;
         if size == 0 {
             break;
+        }
+        // 发送限速:按分块大小换算目标耗时,不足就睡够(0 = 不限速)
+        let limit = shared
+            .send_limit_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if limit > 0 {
+            let target = Duration::from_secs_f64(size as f64 / limit as f64);
+            let elapsed = chunk_started.elapsed();
+            if elapsed < target {
+                tokio::time::sleep(target - elapsed).await;
+            }
         }
         hasher.update(&buf[..size]);
         let chunk_envelope = Envelope::direct(

@@ -770,6 +770,69 @@ async fn removed_contact_returns_on_refresh_like_feiqiu() {
     b.shutdown();
 }
 
+/// 窗口抖动:对端收到 Shaken 事件,且双方各留一条 `shake` 记录(可回看)。
+#[tokio::test]
+async fn shake_delivers_and_records_on_both_sides() {
+    let (a, b) = start_pair("shake", (26491, 26492), (26493, 26494)).await;
+    let mut b_events = b.events();
+
+    let outcome = a.send_shake(b.node_id()).await.unwrap();
+    assert!(matches!(outcome, SendOutcome::Sent(_)), "在线时应直发");
+
+    // B 侧收到抖动事件
+    let shaken = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            match b_events.recv().await {
+                Ok(AppEvent::Shaken { from }) => break from,
+                Ok(_) => continue,
+                Err(_) => panic!("事件流关闭"),
+            }
+        }
+    })
+    .await
+    .expect("8s 内未收到 Shaken 事件");
+    assert_eq!(shaken, a.node_id());
+
+    // A 侧(自己)有一条发出的 shake 记录
+    let mine = a.history(b.node_id(), 10).await.unwrap();
+    assert!(
+        mine.iter().any(|m| m.kind == "shake" && m.is_outgoing),
+        "自己侧应留下记录:{:?}",
+        mine.iter()
+            .map(|m| (m.kind.clone(), m.is_outgoing))
+            .collect::<Vec<_>>()
+    );
+
+    // B 侧有一条收到的 shake 记录
+    let received = eventually(
+        || async {
+            b.history(a.node_id(), 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.kind == "shake" && !m.is_outgoing)
+        },
+        "B 侧抖动记录落库",
+    )
+    .await;
+    assert!(received.body.is_none(), "抖动没有正文");
+
+    // 本地删除:只删自己那一条
+    let id = mine.iter().find(|m| m.kind == "shake").unwrap().id.clone();
+    assert!(a.delete_message(&id).await.unwrap());
+    assert!(
+        !a.history(b.node_id(), 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| m.id == id),
+        "删除后本机历史不应再有该条"
+    );
+
+    a.shutdown();
+    b.shutdown();
+}
+
 /// 轮询直到异步谓词返回 Some(默认 8s 超时)。
 async fn eventually<T, F>(probe: impl FnMut() -> F, what: &str) -> T
 where
