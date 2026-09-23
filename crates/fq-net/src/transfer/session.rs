@@ -969,14 +969,6 @@ async fn receiver_driver(
                 }
                 let actual = hex::encode(recv.hasher.finalize());
                 let verified = done.sha256.as_deref() == Some(actual.as_str());
-                shared.emit(crate::NodeEvent::FileEntryDone {
-                    direction: TransferDirection::Receiving,
-                    token: token.clone(),
-                    peer: from,
-                    path: recv.entry.path.clone(),
-                    sha256: actual.clone(),
-                    verified,
-                });
                 if verified {
                     if let Err(e) = tokio::fs::rename(&recv.part_path, &recv.final_path).await {
                         abort_and_report(
@@ -992,7 +984,25 @@ async fn receiver_driver(
                     }
                     // 记下**实际**落盘路径(同名冲突时会被 unique_destination 改名)
                     last_final = Some(recv.final_path.clone());
+                    // 注意顺序:**改名成功之后**才发完成事件 —— 消费方(聊天历史插入等)
+                    // 收到事件就会去读最终路径,提前发会读到"文件还不存在"(曾导致大小记成 0 B)
+                    shared.emit(crate::NodeEvent::FileEntryDone {
+                        direction: TransferDirection::Receiving,
+                        token: token.clone(),
+                        peer: from,
+                        path: recv.entry.path.clone(),
+                        sha256: actual.clone(),
+                        verified: true,
+                    });
                 } else {
+                    shared.emit(crate::NodeEvent::FileEntryDone {
+                        direction: TransferDirection::Receiving,
+                        token: token.clone(),
+                        peer: from,
+                        path: recv.entry.path.clone(),
+                        sha256: actual.clone(),
+                        verified: false,
+                    });
                     // 校验失败:.part 是脏数据,删除
                     tokio::fs::remove_file(&recv.part_path).await.ok();
                     abort_and_report(

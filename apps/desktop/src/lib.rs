@@ -44,6 +44,8 @@ struct Profile {
     download_dir: Option<String>,
     /// 是否自动获取并安装局域网内的新版本(默认关闭 → 先询问)。
     auto_update: Option<bool>,
+    /// 是否自动接收文件传输(默认关闭 → 弹窗确认)。
+    auto_accept_files: Option<bool>,
 }
 
 fn load_profile(dir: &std::path::Path) -> Profile {
@@ -326,8 +328,9 @@ pub fn run() {
             if let Some(dir) = &profile.download_dir {
                 config.download_dir = Some(PathBuf::from(dir));
             }
-            // 桌面端关闭自动接受:文件要约走 UI 确认流
-            config.auto_accept_files = false;
+            // 桌面端默认关闭自动接受:文件要约走 UI 确认流
+            // (可在 profile.json 里设 "auto_accept_files": true 免确认,适合无人值守/演示)
+            config.auto_accept_files = profile.auto_accept_files.unwrap_or(false);
             // 版本号随通告广播:局域网内可发现更新版本
             config.app_version = Some(env!("CARGO_PKG_VERSION").to_string());
             let fq = tauri::async_runtime::block_on(fq_core::App::start(config))

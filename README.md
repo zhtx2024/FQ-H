@@ -38,6 +38,22 @@ _LAN instant messaging, rewritten in Rust + Tauri. No server, fully peer-to-peer
 - 版本号随通告广播,发现更高版本可直接向对方**拉取安装包**,校验通过后一键重启完成更新
 - 无需更新服务器,无需人工拷贝安装文件;也支持"每次先询问"模式
 
+## 界面
+
+> 截图来自真实运行的客户端(演示数据:张三 / 李四 / 王五)。
+
+**主界面 —— QQ 式三栏 + 微信式气泡**:左侧图标栏与联系人/会话列表,右侧聊天区带头像、时间分割线、文件卡片与图片气泡,右下角为传输面板。
+
+![主界面](docs/images/main.png)
+
+**文件传输记录**:活动传输显示进度与实时速度,可取消;历史记录跨重启保留,可打开文件/删除单条。
+
+![传输记录](docs/images/transfers.png)
+
+**个人资料设置**:头像、昵称、分组改完即广播给局域网成员(头像按需拉取,256×256 方图)。
+
+![设置](docs/images/settings.png)
+
 ## 项目结构
 
 ```text
@@ -56,7 +72,10 @@ scripts/      版本号同步等运维脚本
 
 ## 快速开始
 
-**依赖**:Rust(stable)、Node 20+;Windows 上另需 WebView2 与 MSVC 工具链。
+**依赖**:Rust(stable,edition 2024 需 ≥ 1.85)、Node 20+;Windows 上另需 WebView2 与 MSVC 工具链。
+
+> ⚠️ `apps/desktop` 的编译会校验 `frontendDist`,因此**先构建前端**再跑 `cargo check/build -p fq-desktop`
+> (否则 `tauri-build` 会报 `frontend/dist` 不存在)。纯核心库/CLI 开发不需要 Node。
 
 ```bash
 # 命令行客户端(同机跑两个实例时需错开 TCP 端口)

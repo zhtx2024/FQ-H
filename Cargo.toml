@@ -8,7 +8,7 @@ default-members = ["crates/*", "apps/fq-cli"]
 version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [workspace.lints.rust]
 # deny 而非 forbid:Windows 的 SIO_UDP_CONNRESET 必须用一小块有界的 unsafe(见 fq-net discovery);

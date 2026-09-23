@@ -1118,7 +1118,10 @@ export default function App() {
     const dir = offerDirChoice[token];
     try {
       const ok = await api.acceptFileOffer(token, dir);
-      if (!ok) pushToast("error", "该传输已失效(对方可能已取消)");
+      if (!ok) {
+        // 要约已超时/已取消(会话没了):明确告知但不吓人
+        pushToast("info", "该文件要约已失效(可能超时或被取消),请让对方重发");
+      }
     } catch (e) {
       pushToast("error", `同意接收失败:${String(e)}`);
     }
