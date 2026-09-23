@@ -72,6 +72,9 @@ scripts/      版本号同步等运维脚本
 
 ## 快速开始
 
+> **下载预编译版本**:[Releases](https://github.com/zhtx2024/FQ-H/releases) ——
+> Windows 安装包(NSIS)、免安装便携版 `fq-desktop.exe`、命令行 `fq-cli.exe`。
+
 **依赖**:Rust(stable,edition 2024 需 ≥ 1.85)、Node 20+;Windows 上另需 WebView2 与 MSVC 工具链。
 
 > ⚠️ `apps/desktop` 的编译会校验 `frontendDist`,因此**先构建前端**再跑 `cargo check/build -p fq-desktop`
