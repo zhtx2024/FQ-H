@@ -1,0 +1,38 @@
+/target
+
+# 依赖与构建产物
+**/node_modules
+**/dist
+
+# 运行期数据(身份密钥/聊天库/日志)绝不入库
+*.db
+*.db-shm
+*.db-wal
+logs/
+downloads/
+feiqiu-data/
+
+# 本地临时文件
+.env
+*.bak
+*.part
+*.log
+.DS_Store
+Thumbs.db
+
+# 源码打包备份(体积大,不入库)
+*.7z
+*.zip
+
+# 机器本地 cargo 配置(本地代理/镜像调优,不随仓库分发)
+/.cargo/config.toml
+
+# 内部规划文档(不随公开仓库分发;本地保留)
+docs/PLAN.md
+
+# 本地工具会话数据
+.opencode/
+
+# Tauri ��������(�Զ�����,�����)
+/apps/desktop/gen/
+

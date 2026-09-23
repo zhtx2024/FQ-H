@@ -1,0 +1,17 @@
+[package]
+name = "fq-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "feiqiu-r 本地存储:消息历史、联系人、离线待发队列(SQLite)"
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

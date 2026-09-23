@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/fq-proto", "crates/fq-crypto", "crates/fq-net", "crates/fq-store", "crates/fq-core", "apps/fq-cli", "apps/desktop"]
+# 日常 build/test 不含 Tauri 壳(编译慢);用 --workspace 或 -p fq-desktop 显式构建
+default-members = ["crates/*", "apps/fq-cli"]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+# deny 而非 forbid:Windows 的 SIO_UDP_CONNRESET 必须用一小块有界的 unsafe(见 fq-net discovery);
+# 其余 crate 全部在各自 lib.rs 显式 forbid,安全等级不变。
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

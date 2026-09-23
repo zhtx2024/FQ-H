@@ -1,0 +1,20 @@
+[package]
+name = "fq-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "feiqiu-r 局域网通信协议 v1:报文类型、MessagePack 编解码、分帧与能力协商(零 IO)"
+
+[dependencies]
+bitflags = { version = "2.6", features = ["serde"] }
+hex = "0.4"
+rmp-serde = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11"
+sha2 = "0.10"
+thiserror = "2.0"
+uuid = { version = "1.11", features = ["v7", "serde"] }
+
+[lints]
+workspace = true

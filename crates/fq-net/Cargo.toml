@@ -1,0 +1,27 @@
+[package]
+name = "fq-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "feiqiu-r 网络层:UDP 发现、TCP 安全传输(Noise IK)、连接管理、消息去重"
+
+[dependencies]
+fq-proto = { path = "../fq-proto" }
+fq-crypto = { path = "../fq-crypto" }
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util", "fs"] }
+socket2 = "0.6"
+if-addrs = "0.15"
+sha2 = "0.10"
+hex = "0.4"
+thiserror = "2.0"
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["test-util"] }
+
+[lints]
+workspace = true
