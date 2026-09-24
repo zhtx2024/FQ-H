@@ -33,10 +33,13 @@ docs/PLAN.md
 # æœ¬åœ°å·¥å…·ä¼šè¯æ•°æ®
 .opencode/
 
-# Tauri ¹¹½¨²úÎï(×Ô¶¯Éú³É,²»Èë¿â)
+# Tauri æ„å»ºäº§ç‰©(è‡ªåŠ¨ç”Ÿæˆ,ä¸å…¥åº“)
 /apps/desktop/gen/
 
+# å›¾è¡¨äº§ç‰©:HTML ä¸å®æµ‹æˆªå›¾è¾ƒå¤§ä¸å…¥åº“;**JSON è§„æ ¼ä¿ç•™å…¥åº“**,å¯æ®æ­¤é‡æ–°æ¸²æŸ“
+/docs/diagrams/*.html
+/docs/diagrams/*.png
+/docs/diagrams/*.visual-check.*
 
-# ±¾µØÉú³ÉµÄÍ¼±í²úÎï(HTML/½ØÍ¼½Ï´ó,ĞèÒªÊ±ÔÙµ¥¶À¾ö¶¨ÊÇ·ñÈë¿â)
-/docs/diagrams/
-
+# CI å·¥ä½œæµ:ç­‰å¾… gh token çš„ workflow æƒé™(æˆæƒååˆ é™¤æœ¬è¡Œå¹¶æäº¤)
+/.github/workflows/ci.yml

@@ -1,0 +1,358 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "FQ-H 现阶段运行流程",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "boot-to-channel",
+        "label": "启动到加密通道",
+        "focus": [
+          "start",
+          "announce",
+          "trust",
+          "handshake"
+        ],
+        "note": "客户端启动即广播,收到通告后先校验身份,再建立 Noise IK 加密通道。"
+      },
+      {
+        "id": "daily-work",
+        "label": "日常收发",
+        "focus": [
+          "online",
+          "transfer",
+          "archive",
+          "queue"
+        ],
+        "note": "在线阶段承载文本/图片/文件/群聊;对端离线自动入队,上线后按序补发。"
+      },
+      {
+        "id": "trouble-and-update",
+        "label": "排障与更新",
+        "focus": [
+          "announce",
+          "trouble",
+          "version",
+          "install"
+        ],
+        "note": "搜不到同伴可定向探测重试;发现更高版本则从对端拉取安装包并重启安装。"
+      }
+    ],
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "frontend": {
+          "label": "客户端界面"
+        },
+        "backend": {
+          "label": "协议与通讯"
+        },
+        "security": {
+          "label": "安全校验"
+        },
+        "database": {
+          "label": "本地存储"
+        },
+        "cloud": {
+          "label": "更新通道"
+        },
+        "external": {
+          "label": "运维入口"
+        },
+        "messagebus": {
+          "visible": false
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "client",
+      "label": "客户端"
+    },
+    {
+      "id": "net",
+      "label": "发现 · 安全 · 更新"
+    },
+    {
+      "id": "comms",
+      "label": "通讯与传输"
+    },
+    {
+      "id": "data",
+      "label": "本地存储"
+    }
+  ],
+  "phases": [
+    {
+      "id": "boot",
+      "label": "启动与发现",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "secure",
+      "label": "校验与建连",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "live",
+      "label": "在线协作与更新",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "groups": [
+    {
+      "id": "secure_channel",
+      "label": "加密通道",
+      "lane": "net",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "security"
+    },
+    {
+      "id": "update_path",
+      "label": "P2P 更新",
+      "lane": "net",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "start",
+    "announce",
+    "trust",
+    "handshake",
+    "online",
+    "transfer",
+    "archive"
+  ],
+  "semanticChecks": {
+    "allowedRoots": [
+      "start"
+    ],
+    "allowedTerminals": [
+      "archive",
+      "install"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "lane": "client",
+      "col": 0,
+      "type": "frontend",
+      "label": "启动客户端",
+      "sublabel": "身份与密钥",
+      "width": 124
+    },
+    {
+      "id": "trouble",
+      "lane": "net",
+      "col": 0,
+      "type": "external",
+      "label": "排障入口",
+      "sublabel": "探测与放行",
+      "width": 124
+    },
+    {
+      "id": "announce",
+      "lane": "net",
+      "col": 1,
+      "type": "backend",
+      "label": "局域网发现",
+      "sublabel": "广播 + 定向",
+      "tag": "UDP 24250",
+      "width": 124
+    },
+    {
+      "id": "trust",
+      "lane": "net",
+      "col": 2,
+      "type": "security",
+      "label": "身份校验",
+      "sublabel": "绑定签名 + TOFU",
+      "width": 124
+    },
+    {
+      "id": "handshake",
+      "lane": "net",
+      "col": 3,
+      "type": "security",
+      "label": "Noise IK 建连",
+      "sublabel": "加密信道就绪",
+      "tag": "前向保密",
+      "width": 124
+    },
+    {
+      "id": "version",
+      "lane": "net",
+      "col": 4,
+      "type": "cloud",
+      "label": "版本发现",
+      "sublabel": "通告携带版本号",
+      "width": 124
+    },
+    {
+      "id": "install",
+      "lane": "net",
+      "col": 5,
+      "type": "cloud",
+      "label": "拉取并安装",
+      "sublabel": "校验后重启生效",
+      "tag": "无需服务器",
+      "width": 124
+    },
+    {
+      "id": "online",
+      "lane": "comms",
+      "col": 4,
+      "type": "backend",
+      "label": "在线通讯",
+      "sublabel": "文本 · 图片 · 抖动",
+      "tag": "群聊扇出",
+      "width": 124
+    },
+    {
+      "id": "transfer",
+      "lane": "comms",
+      "col": 5,
+      "type": "backend",
+      "label": "文件传输会话",
+      "sublabel": "分块 + 校验",
+      "tag": "断点续传",
+      "width": 124
+    },
+    {
+      "id": "queue",
+      "lane": "data",
+      "col": 4,
+      "type": "database",
+      "label": "离线队列",
+      "sublabel": "送达回执才出队",
+      "width": 124
+    },
+    {
+      "id": "archive",
+      "lane": "data",
+      "col": 5,
+      "type": "database",
+      "label": "本地入库",
+      "sublabel": "会话与未读",
+      "width": 124
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-announce",
+      "from": "start",
+      "to": "announce",
+      "label": "广播上线",
+      "variant": "emphasis"
+    },
+    {
+      "id": "announce-trust",
+      "from": "announce",
+      "to": "trust",
+      "label": "收到通告"
+    },
+    {
+      "id": "trust-handshake",
+      "from": "trust",
+      "to": "handshake",
+      "label": "校验通过",
+      "variant": "security"
+    },
+    {
+      "id": "handshake-online",
+      "from": "handshake",
+      "to": "online",
+      "label": "通道就绪",
+      "variant": "emphasis"
+    },
+    {
+      "id": "online-transfer",
+      "from": "online",
+      "to": "transfer",
+      "label": "文件 / 目录 / 图片"
+    },
+    {
+      "id": "transfer-archive",
+      "from": "transfer",
+      "to": "archive",
+      "label": "落盘后入库"
+    },
+    {
+      "id": "online-queue",
+      "from": "online",
+      "to": "queue",
+      "label": "对端离线",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "queue-online",
+      "from": "queue",
+      "to": "online",
+      "label": "上线后补发",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "announce-trouble",
+      "from": "announce",
+      "to": "trouble",
+      "label": "搜不到同伴",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "trouble-announce",
+      "from": "trouble",
+      "to": "announce",
+      "label": "探测重试",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "online-version",
+      "from": "online",
+      "to": "version",
+      "label": "版本更高",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "version-install",
+      "from": "version",
+      "to": "install",
+      "label": "拉取 · 校验",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主路径",
+      "items": [
+        "启动即广播,校验身份后建立 Noise IK 加密通道",
+        "在线阶段承载文本/图片/文件/群聊,收到的文件校验后入库"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "可靠性与更新",
+      "items": [
+        "离线消息以送达回执出队;传输保留 .part 可续传,整包 SHA-256 校验",
+        "版本号随通告广播,向更高版本节点拉取安装包,校验后一键重启"
+      ]
+    }
+  ]
+}

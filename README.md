@@ -66,6 +66,19 @@ _LAN instant messaging, rewritten in Rust + Tauri. No server, fully peer-to-peer
 
 ![设置](docs/images/settings.png)
 
+## 运行流程
+
+当前版本的主流程 —— **启动 → 局域网发现 → 身份校验 → Noise IK 加密通道 → 在线通讯 → 文件传输 → 本地入库**,并画出两条可恢复支线(离线补发、搜不到同伴时的探测重试)与 P2P 更新通路:
+
+![运行流程](docs/images/flow-runtime.png)
+
+> 上面是静态截图;交互版(深浅色切换、自由缩放、路径追踪、3 章引导故事)可用 [archify](https://github.com/tt-a1i/archify) 从规格文件重新渲染:
+>
+> ```bash
+> node <archify>/bin/archify.mjs deliver workflow \
+>   docs/diagrams/fq-h-runtime-flow.workflow.json flow.html --quality showcase
+> ```
+
 ## 项目结构
 
 ```text
