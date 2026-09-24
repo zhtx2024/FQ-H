@@ -94,6 +94,13 @@ pub enum AppEvent {
         /// 发起方。
         from: NodeId,
     },
+    /// 对端"正在输入"状态变化(提示类,不落库)。
+    Typing {
+        /// 对端。
+        from: NodeId,
+        /// true = 开始输入,false = 停止。
+        started: bool,
+    },
 }
 
 /// 发送结果。
@@ -317,6 +324,16 @@ impl App {
 
     /// 发送文本:对端可达即发,不可达则入队待补发。
     pub async fn send_text(&self, to: NodeId, body: &str) -> Result<SendOutcome> {
+        self.send_text_mentions(to, body, Vec::new()).await
+    }
+
+    /// 发送文本(可带 @ 提醒;`mentions` 为被 @ 的节点)。
+    pub async fn send_text_mentions(
+        &self,
+        to: NodeId,
+        body: &str,
+        mentions: Vec<NodeId>,
+    ) -> Result<SendOutcome> {
         let envelope = Envelope::direct(
             self.node_id(),
             to,
@@ -324,7 +341,7 @@ impl App {
                 body: body.to_string(),
                 format: TextFormat::Plain,
                 reply_to: None,
-                mentions: vec![],
+                mentions,
                 group_id: None,
                 group_name: None,
             }),
@@ -388,6 +405,24 @@ impl App {
                 Ok(SendOutcome::Queued(id))
             }
         }
+    }
+
+    /// 发送"正在输入"状态(提示类消息:不落库、不可达时直接忽略,过期即无意义)。
+    pub async fn send_typing(&self, to: NodeId, started: bool) -> Result<()> {
+        let envelope = Envelope::direct(
+            self.node_id(),
+            to,
+            Kind::Typing(fq_proto::TypingBody {
+                state: if started {
+                    fq_proto::TypingState::Started
+                } else {
+                    fq_proto::TypingState::Stopped
+                },
+                thread: None,
+            }),
+        );
+        let _ = self.handle.send(envelope).await;
+        Ok(())
     }
 
     /// 本地删除一条历史消息(只删本机;对端不受影响)。
@@ -771,6 +806,17 @@ impl App {
     ///
     /// 返回 `(成功直发数, 入队数)`。
     pub async fn send_group_text(&self, group_id: &str, body: &str) -> Result<(usize, usize)> {
+        self.send_group_text_mentions(group_id, body, Vec::new())
+            .await
+    }
+
+    /// 发送群消息(可带 @ 提醒)。
+    pub async fn send_group_text_mentions(
+        &self,
+        group_id: &str,
+        body: &str,
+        mentions: Vec<NodeId>,
+    ) -> Result<(usize, usize)> {
         let group = self
             .store
             .lock()
@@ -792,7 +838,7 @@ impl App {
                     body: body.to_string(),
                     format: TextFormat::Plain,
                     reply_to: None,
-                    mentions: vec![],
+                    mentions: mentions.clone(),
                     group_id: Some(group.id.clone()),
                     group_name: Some(group.name.clone()),
                 }),
@@ -1497,6 +1543,13 @@ async fn event_pump(
                         if delivered.is_some() {
                             let _ = store.lock().await.remove_pending(&id);
                         }
+                    }
+                    Kind::Typing(typing) => {
+                        // 提示类消息:不落库,只通知 UI 显示"对方正在输入…"
+                        let _ = out.send(AppEvent::Typing {
+                            from: *from,
+                            started: typing.state == fq_proto::TypingState::Started,
+                        });
                     }
                     Kind::Shake(_) => {
                         // 窗口抖动:落一条记录(两边都有上下文),并通知 UI 抖窗口

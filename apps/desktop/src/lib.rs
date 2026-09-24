@@ -193,6 +193,8 @@ enum FqEventDto {
         id: String,
         body: String,
         ts_ms: i64,
+        /// 被 @ 的节点(群聊 @提醒用;单聊为空)。
+        mentions: Vec<String>,
     },
     Delivered {
         id: String,
@@ -265,6 +267,12 @@ enum FqEventDto {
     Shaken {
         from: String,
         from_name: String,
+    },
+    /// 对端正在输入(提示类,不落库)。
+    Typing {
+        from: String,
+        from_name: String,
+        started: bool,
     },
 }
 
@@ -423,7 +431,8 @@ pub fn run() {
             get_peer_avatar,
             delete_conversation,
             send_shake,
-            delete_message
+            delete_message,
+            send_typing
         ])
         .run(tauri::generate_context!())
         .map_err(|e| eprintln!("[feiqiu-r] 运行失败: {e}"))
@@ -505,6 +514,11 @@ async fn forward_events(
                 from: from.to_hex(),
                 from_name: name_of(from),
             }),
+            fq_core::AppEvent::Typing { from, started } => Some(FqEventDto::Typing {
+                from: from.to_hex(),
+                from_name: name_of(from),
+                started,
+            }),
             fq_core::AppEvent::Node(inner) => match *inner {
                 fq_net::NodeEvent::PeerDiscovered { peer, .. }
                 | fq_net::NodeEvent::PeerUpdated { peer, .. } => {
@@ -539,6 +553,7 @@ async fn forward_events(
                         id: envelope.id.to_string(),
                         body: body.body,
                         ts_ms: envelope.ts_ms,
+                        mentions: body.mentions.iter().map(|id| id.to_hex()).collect(),
                     }),
                     fq_proto::Kind::Ack(ack) => match ack.status {
                         fq_proto::AckStatus::Delivered => Some(FqEventDto::Delivered {
@@ -1311,17 +1326,38 @@ async fn send_text(
     state: State<'_, FqState>,
     node_id: String,
     body: String,
+    mentions: Option<Vec<String>>,
 ) -> Result<SendResultDto, String> {
     let to = parse_node_id(&node_id)?;
+    let mention_ids: Vec<fq_proto::NodeId> = mentions
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|raw| fq_proto::NodeId::from_hex(raw).ok())
+        .collect();
     let outcome = state
         .app
-        .send_text(to, &body)
+        .send_text_mentions(to, &body, mention_ids)
         .await
         .map_err(|e| e.to_string())?;
     Ok(SendResultDto {
         id: outcome.message_id().to_string(),
         queued: outcome.is_queued(),
     })
+}
+
+/// 发送"正在输入"状态(提示类,不落库;仅单聊使用)。
+#[tauri::command]
+async fn send_typing(
+    state: State<'_, FqState>,
+    node_id: String,
+    started: bool,
+) -> Result<(), String> {
+    let to = parse_node_id(&node_id)?;
+    state
+        .app
+        .send_typing(to, started)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 发送文件到目标会话:目标可为单聊 NodeId(hex)或 `group:...` 群 ID。
@@ -1421,10 +1457,16 @@ async fn send_group_text(
     state: State<'_, FqState>,
     group_id: String,
     body: String,
+    mentions: Option<Vec<String>>,
 ) -> Result<(usize, usize), String> {
+    let mention_ids: Vec<fq_proto::NodeId> = mentions
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|raw| fq_proto::NodeId::from_hex(raw).ok())
+        .collect();
     state
         .app
-        .send_group_text(&group_id, &body)
+        .send_group_text_mentions(&group_id, &body, mention_ids)
         .await
         .map_err(|e| e.to_string())
 }

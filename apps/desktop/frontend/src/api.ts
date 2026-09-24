@@ -10,8 +10,12 @@ export const getSelfInfo = () => invoke<SelfInfo>("get_self_info");
 
 export const listPeers = () => invoke<Peer[]>("list_peers");
 
-export const sendText = (nodeId: string, body: string) =>
-  invoke<SendResult>("send_text", { nodeId, body });
+export const sendText = (nodeId: string, body: string, mentions?: string[]) =>
+  invoke<SendResult>("send_text", { nodeId, body, mentions: mentions ?? null });
+
+/** 发送"正在输入"状态(提示类,单聊用)。 */
+export const sendTyping = (nodeId: string, started: boolean) =>
+  invoke<void>("send_typing", { nodeId, started });
 
 export const sendFileTo = (target: string, path: string) =>
   invoke<string[]>("send_file_to", { target, path });
@@ -114,8 +118,8 @@ export const createGroup = (name: string, members: string[]) =>
 export const deleteGroup = (groupId: string) =>
   invoke<boolean>("delete_group", { groupId });
 
-export const sendGroupText = (groupId: string, body: string) =>
-  invoke<[number, number]>("send_group_text", { groupId, body });
+export const sendGroupText = (groupId: string, body: string, mentions?: string[]) =>
+  invoke<[number, number]>("send_group_text", { groupId, body, mentions: mentions ?? null });
 
 export interface ConversationInfo {
   peer: string;

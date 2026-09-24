@@ -21,6 +21,8 @@ _LAN instant messaging, rewritten in Rust + Tauri. No server, fully peer-to-peer
 - **消息右键菜单**:复制文本、**转发到联系人/群**、删除(仅本机)
 - **资料卡**:点任意头像看昵称/分组/IP/版本/NodeId,可一键发消息或**抖一抖**
 - **窗口抖动**(飞秋经典):摇晃对端窗口并留下一条提示记录
+- **正在输入**:对方打字时聊天头部显示动态提示(提示类消息,不落库)
+- **群内 @提醒**:@ 成员时对方收到红标「有人@我」与提示
 - 群聊:本地群定义 + 发送方扇出,接收方按消息自动建群(群内显示发送者)
 - 会话列表(未读持久化、可移除)、分区折叠、历史分页、全文搜索
 - 头像缺省时按 NodeId 生成稳定配色 + 首字,列表一眼可辨
@@ -116,6 +118,7 @@ cd apps/desktop && npx tauri build --config tauri.conf.json
 |---|---|
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | 报文格式、分帧/分段、字段表、安全模型、前向兼容约定 |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层契约、数据模型、群聊/更新/头像设计、踩坑记录 |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 后续升级清单(功能 / 价值 / 成本 / 依赖)与已知限制 |
 
 ## 许可
 

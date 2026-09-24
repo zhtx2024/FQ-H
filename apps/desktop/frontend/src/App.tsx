@@ -299,6 +299,14 @@ export default function App() {
   const [prefs, setPrefs] = useState<api.Preferences | null>(null);
   const [probeInput, setProbeInput] = useState("");
   const [probeHint, setProbeHint] = useState("");
+  /** 对端"正在输入"时间戳(node_id → ms;4 秒无更新自动消失)。 */
+  const [typingPeers, setTypingPeers] = useState<Record<string, number>>({});
+  /** 群聊 @ 选择器与已选中的被 @ 成员。 */
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionIds, setMentionIds] = useState<string[]>([]);
+  /** 我上报"正在输入"的节流状态与停止定时器。 */
+  const typingSentRef = useRef<{ peer: string; sentAt: number } | null>(null);
+  const typingStopTimerRef = useRef<number | null>(null);
 
   /** 打开资料卡:`nodeId` 为空表示自己。 */
   const openProfileCard = useCallback((nodeId?: string) => {
@@ -1081,6 +1089,23 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [autoUpdate, pendingInstall, showUpdatePrompt, doInstallUpdate]);
 
+  // "正在输入"提示 4 秒后自动消失(对方停止输入或已发送消息)
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTypingPeers((prev) => {
+        const now = Date.now();
+        const next: Record<string, number> = {};
+        let changed = false;
+        for (const [id, ts] of Object.entries(prev)) {
+          if (now - ts < 4000) next[id] = ts;
+          else changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const handleEvent = (event: FqEvent) => {
     switch (event.type) {
       case "peer_up":
@@ -1088,6 +1113,8 @@ export default function App() {
         refreshPeers();
         break;
       case "message": {
+        const mentions = Array.isArray(event.mentions) ? event.mentions : [];
+        const mentionedMe = Boolean(self?.node_id) && mentions.includes(self!.node_id);
         const msg: ChatMessage = {
           id: event.id,
           outgoing: false,
@@ -1096,6 +1123,7 @@ export default function App() {
           ts_ms: event.ts_ms,
           delivered: false,
           read: false,
+          mentions,
         };
         setMessages((m) => ({
           ...m,
@@ -1104,10 +1132,29 @@ export default function App() {
         setUnread((u) =>
           selected === event.from ? u : { ...u, [event.from]: (u[event.from] ?? 0) + 1 },
         );
+        // 被打断输入状态:收到消息即清除"正在输入"
+        setTypingPeers((prev) => {
+          if (!prev[event.from]) return prev;
+          const next = { ...prev };
+          delete next[event.from];
+          return next;
+        });
+        if (mentionedMe) {
+          pushToast("info", `${event.from_name} 在群里 @ 了你`);
+        }
         refreshConversations();
         if (selected === event.from) {
           api.markRead(event.from).catch(() => undefined);
         }
+        break;
+      }
+      case "typing": {
+        setTypingPeers((prev) => {
+          const next = { ...prev };
+          if (event.started) next[event.from] = Date.now();
+          else delete next[event.from];
+          return next;
+        });
         break;
       }
       case "delivered":
@@ -1319,9 +1366,15 @@ export default function App() {
     if (!body || !selected) return;
     setDraft("");
     const isGroup = selected.startsWith("group:");
+    // @ 提醒:只保留正文里确实还带着"@名字"的成员(用户可能删掉了)
+    const mentions = mentionIds.filter((id) => {
+      const name = peers.find((p) => p.node_id === id)?.name;
+      return name ? body.includes(`@${name}`) : false;
+    });
+    setMentionIds([]);
     try {
       if (isGroup) {
-        const [sent, queued] = await api.sendGroupText(selected, body);
+        const [sent, queued] = await api.sendGroupText(selected, body, mentions);
         const msg: ChatMessage = {
           id: `grp-${Date.now()}`,
           outgoing: true,
@@ -1330,6 +1383,7 @@ export default function App() {
           ts_ms: Date.now(),
           delivered: false,
           read: false,
+          mentions,
         };
         setMessages((m) => ({ ...m, [selected]: [...(m[selected] ?? []), msg] }));
         if (queued > 0) {
@@ -1356,6 +1410,23 @@ export default function App() {
       pushToast("error", `消息发送失败:${String(e)}`);
       setDraft(body);
     }
+  };
+
+  /** 输入变化:单聊时按 3 秒节流上报"正在输入",停手 3 秒后发停止。 */
+  const onDraftChange = (value: string) => {
+    setDraft(value);
+    if (!selected || selected.startsWith("group:")) return;
+    const now = Date.now();
+    const sent = typingSentRef.current;
+    if (!sent || sent.peer !== selected || now - sent.sentAt > 3000) {
+      typingSentRef.current = { peer: selected, sentAt: now };
+      void api.sendTyping(selected, true).catch(() => undefined);
+    }
+    if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
+    typingStopTimerRef.current = window.setTimeout(() => {
+      typingSentRef.current = null;
+      void api.sendTyping(selected, false).catch(() => undefined);
+    }, 3000);
   };
 
   /** 发送文件的目标可能是单聊或群聊;返回的每个 token 都是独立传输。 */
@@ -1783,11 +1854,22 @@ export default function App() {
               </span>
               <span className="chat-sub">{selectedEntity.sub}</span>
               <span className="chat-status">
-                {selectedEntity.isGroup
-                  ? "群聊(消息扇出到各成员)"
-                  : selectedEntity.online
-                    ? "在线"
-                    : "离线(消息将入队)"}
+                {typingPeers[selected ?? ""] ? (
+                  <span className="typing-hint">
+                    对方正在输入
+                    <span className="typing-dots">
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  </span>
+                ) : selectedEntity.isGroup ? (
+                  "群聊(消息扇出到各成员)"
+                ) : selectedEntity.online ? (
+                  "在线"
+                ) : (
+                  "离线(消息将入队)"
+                )}
               </span>
               <button
                 className="header-btn"
@@ -1914,6 +1996,9 @@ export default function App() {
                         />
                         <div className="msg-col">
                           {showSender && <div className="msg-sender">{avatarName}</div>}
+                          {!isMine && m.mentions && self?.node_id && m.mentions.includes(self.node_id) && (
+                            <div className="mention-tag">有人@我</div>
+                          )}
                           {fileInfo ? (
                             fileInfo.i ? (
                               /* 图片:缩略图预览 → 点击放大(灯箱) */
@@ -1999,7 +2084,53 @@ export default function App() {
                 <button className="tool-btn" title="截屏发送" onClick={() => void doScreenshot()}>
                   ✂️
                 </button>
+                {selectedEntity?.isGroup && (
+                  <button
+                    className={`tool-btn ${showMentions ? "active" : ""}`}
+                    title="@ 群成员(被 @ 的人会看到提醒)"
+                    onClick={() => setShowMentions(!showMentions)}
+                  >
+                    @
+                  </button>
+                )}
               </div>
+
+              {showMentions && selectedEntity?.isGroup && (
+                <div className="mention-panel">
+                  <div className="mention-title">
+                    选择要 @ 的成员
+                    <button className="mention-close" onClick={() => setShowMentions(false)}>
+                      ×
+                    </button>
+                  </div>
+                  {(groups.find((g) => g.id === selected)?.members ?? []).map((memberId) => {
+                    const member = peers.find((p) => p.node_id === memberId);
+                    const name = member?.name ?? `${memberId.slice(0, 8)}…`;
+                    return (
+                      <button
+                        key={memberId}
+                        className="mention-item"
+                        onClick={() => {
+                          setDraft((d) => `${d}${d && !d.endsWith(" ") ? " " : ""}@${name} `);
+                          setMentionIds((ids) =>
+                            ids.includes(memberId) ? ids : [...ids, memberId],
+                          );
+                          setShowMentions(false);
+                        }}
+                      >
+                        <AvatarBubble
+                          url={avatars[memberId]}
+                          fallback={name}
+                          seed={memberId}
+                          size={24}
+                          round
+                        />
+                        <span>{name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               {showEmoji && (
                 <div className="emoji-panel">
@@ -2035,7 +2166,7 @@ export default function App() {
                 <textarea
                   value={draft}
                   placeholder=""
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => onDraftChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();

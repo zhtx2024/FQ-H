@@ -661,6 +661,14 @@ async fn event_printer(
             AppEvent::Shaken { from } => {
                 eprintln!("[SHAKE] {from} 抖了你一下");
             }
+            AppEvent::Typing { from, started } => {
+                let state = if started {
+                    "开始输入"
+                } else {
+                    "停止输入"
+                };
+                eprintln!("[TYPING] {from} {state}");
+            }
             AppEvent::UpdateReady {
                 from,
                 version,

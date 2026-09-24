@@ -833,6 +833,87 @@ async fn shake_delivers_and_records_on_both_sides() {
     b.shutdown();
 }
 
+/// "正在输入"提示:对端收到 Typing 事件,且双方都不落库(提示类消息)。
+#[tokio::test]
+async fn typing_is_delivered_and_not_persisted() {
+    let (a, b) = start_pair("typing", (26501, 26502), (26511, 26512)).await;
+    let mut b_events = b.events();
+
+    a.send_typing(b.node_id(), true).await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut started_from = None;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), b_events.recv()).await {
+            Ok(Ok(AppEvent::Typing { from, started })) if started => {
+                started_from = Some(from);
+                break;
+            }
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => break,
+        }
+    }
+    assert_eq!(
+        started_from,
+        Some(a.node_id()),
+        "8s 内应收到「开始输入」提示"
+    );
+
+    // 提示类消息不落库
+    assert!(
+        b.history(a.node_id(), 10).await.unwrap().is_empty(),
+        "接收方不应把提示写入历史"
+    );
+    assert!(
+        a.history(b.node_id(), 10).await.unwrap().is_empty(),
+        "发送方也不应写入历史"
+    );
+
+    a.shutdown();
+    b.shutdown();
+}
+
+/// 群聊 @提醒:`mentions` 随消息送达对端(在线上报文里可见)。
+#[tokio::test]
+async fn group_mentions_travel_with_message() {
+    let (a, b) = start_pair("mention", (26521, 26522), (26531, 26532)).await;
+    let b_id = b.node_id();
+    let group_id = a.create_group("项目组", &[b_id]).await.unwrap();
+    let mut b_events = b.events();
+
+    let (sent, queued) = a
+        .send_group_text_mentions(&group_id, "@Bob 看一下这个", vec![b_id])
+        .await
+        .unwrap();
+    assert_eq!(sent, 1, "B 在线应直发");
+    assert_eq!(queued, 0);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut got_mentions = None;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), b_events.recv()).await {
+            Ok(Ok(AppEvent::Node(inner))) => {
+                if let NodeEvent::MessageReceived { envelope, .. } = *inner {
+                    if let fq_proto::Kind::Text(body) = envelope.kind {
+                        got_mentions = Some(body.mentions);
+                        break;
+                    }
+                }
+            }
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => break,
+        }
+    }
+    let mentions = got_mentions.expect("8s 内应收到带 @ 的群消息");
+    assert!(
+        mentions.contains(&b_id),
+        "@ 列表里应包含被 @ 的节点,实际: {mentions:?}"
+    );
+
+    a.shutdown();
+    b.shutdown();
+}
+
 /// 轮询直到异步谓词返回 Some(默认 8s 超时)。
 async fn eventually<T, F>(probe: impl FnMut() -> F, what: &str) -> T
 where

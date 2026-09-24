@@ -40,6 +40,8 @@ export interface ChatMessage {
   status?: string;
   /** 发送方 NodeId(群聊里显示是谁发的) */
   from_node?: string;
+  /** 被 @ 的节点(群聊 @提醒;仅内存态,不回读) */
+  mentions?: string[];
 }
 
 export interface SendResult {
@@ -51,7 +53,7 @@ export interface SendResult {
 export type FqEvent =
   | { type: "peer_up"; node_id: string; name: string; group: string | null }
   | { type: "peer_down"; node_id: string }
-  | { type: "message"; from: string; from_name: string; id: string; body: string; ts_ms: number }
+  | { type: "message"; from: string; from_name: string; id: string; body: string; ts_ms: number; mentions: string[] }
   | { type: "delivered"; id: string }
   | { type: "read"; id: string }
   | { type: "queued_flushed"; to: string; count: number }
@@ -83,7 +85,9 @@ export type FqEvent =
   // 头像:某对端已移除头像(前端清掉展示)
   | { type: "peer_avatar_removed"; node_id: string }
   // 窗口抖动:对端抖了我一下(前端晃动窗口 + 留一条提示)
-  | { type: "shaken"; from: string; from_name: string };
+  | { type: "shaken"; from: string; from_name: string }
+  // 对端正在输入(提示类,不落库)
+  | { type: "typing"; from: string; from_name: string; started: boolean };
 
 export interface SpeedSample {
   t: number;

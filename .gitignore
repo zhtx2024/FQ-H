@@ -36,3 +36,7 @@ docs/PLAN.md
 # Tauri 构建产物(自动生成,不入库)
 /apps/desktop/gen/
 
+
+# 本地生成的图表产物(HTML/截图较大,需要时再单独决定是否入库)
+/docs/diagrams/
+
