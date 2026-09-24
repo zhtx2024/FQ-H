@@ -119,6 +119,15 @@ pub enum AppEvent {
         /// 文件名(展示用)。
         name: String,
     },
+    /// 某条消息被撤回(本地主动撤回或收到对端撤回请求)。
+    MessageRecalled {
+        /// 会话键(NodeId hex 或 `group:...`)。
+        key: String,
+        /// 被撤回的消息 ID。
+        id: String,
+        /// true = 本端撤回的,false = 对端撤回的。
+        outgoing: bool,
+    },
 }
 
 /// 发送结果。
@@ -224,6 +233,18 @@ impl AppConfig {
             status: fq_proto::PresenceStatus::Online,
         }
     }
+}
+
+/// 发送失败自动重试:最多重试次数(总尝试 = 1 + 该值)。
+/// 消息撤回窗口:发出后多久内还能撤回(微信是 2 分钟,这里保持一致)。
+pub const RECALL_WINDOW_MS: i64 = 120_000;
+
+/// 是否在撤回时限内(`ts_ms` 为消息发出时间,`now_ms` 为当前时间)。
+///
+/// 允许一点时钟回拨(对端与本机时间略有偏差时不至于完全撤不回)。
+pub fn within_recall_window(ts_ms: i64, now_ms: i64) -> bool {
+    let age = now_ms - ts_ms;
+    (-RECALL_WINDOW_MS..=RECALL_WINDOW_MS).contains(&age)
 }
 
 /// 发送失败自动重试:最多重试次数(总尝试 = 1 + 该值)。
@@ -472,6 +493,84 @@ impl App {
                 Ok(SendOutcome::Queued(id))
             }
         }
+    }
+
+    /// 撤回一条自己发出的消息(默认 [`RECALL_WINDOW_MS`] 窗口内)。
+    ///
+    /// 本地先标记(界面立即变),再把撤回报文发给对端:单聊发一个目标,群聊
+    /// 扇出到全体成员。对端不可达时与文本一样**入队**,等它上线补发 ——
+    /// 否则对方会一直看到已经被你撤掉的正文。
+    ///
+    /// 返回通知到的对端数(直发 + 入队);不可撤回时返回错误。
+    pub async fn recall_message(&self, id: &str) -> Result<usize> {
+        let Some(meta) = self
+            .store
+            .lock()
+            .await
+            .message_meta(id)
+            .map_err(Error::Store)?
+        else {
+            return Err(Error::Start("消息不存在(可能已被清理)".into()));
+        };
+        if !meta.is_outgoing || meta.from_node != self.node_id().to_hex() {
+            return Err(Error::Start("只能撤回自己发出的消息".into()));
+        }
+        if !within_recall_window(meta.ts_ms, now_ms()) {
+            return Err(Error::Start("超过 2 分钟,消息无法撤回".into()));
+        }
+        // 先把 ID 解析出来再动本地状态:否则非法 ID 会出现
+        // "本地已撤回、对端根本没收到"的不一致(踩过)
+        let message_id = fq_proto::MsgId::parse(id).map_err(Error::Proto)?;
+
+        // 本地先标记:自己这边立刻显示"你撤回了一条消息"
+        self.store
+            .lock()
+            .await
+            .mark_message_recalled(id)
+            .map_err(Error::Store)?;
+        let _ = self.events.send(AppEvent::MessageRecalled {
+            key: meta.peer.clone(),
+            id: id.to_string(),
+            outgoing: true,
+        });
+
+        // 通知对端:群聊扇出到全部成员(离线成员入队,上线后补发)
+        let targets: Vec<String> = match meta.peer.strip_prefix("group:") {
+            Some(group_id) => self
+                .store
+                .lock()
+                .await
+                .get_group(&format!("group:{group_id}"))
+                .map_err(Error::Store)?
+                .map(|group| group.members)
+                .unwrap_or_default(),
+            None => vec![meta.peer.clone()],
+        };
+        let recall = Kind::Recall(fq_proto::RecallBody { message_id });
+        let mut notified = 0usize;
+        for target_hex in targets {
+            let Ok(peer) = NodeId::from_hex(&target_hex) else {
+                continue;
+            };
+            let envelope = Envelope::direct(self.node_id(), peer, recall.clone());
+            match self.handle.send(envelope.clone()).await {
+                Ok(()) => notified += 1,
+                Err(_) => {
+                    if let Ok(blob) = codec::encode(&envelope) {
+                        if self
+                            .store
+                            .lock()
+                            .await
+                            .enqueue(&envelope.id.to_string(), &target_hex, &blob, now_ms())
+                            .is_ok()
+                        {
+                            notified += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(notified)
     }
 
     /// 发送窗口抖动(飞秋经典功能:提醒对方注意;对方会晃动窗口并留下一条记录)。
@@ -940,11 +1039,15 @@ impl App {
 
         let mut sent = 0usize;
         let mut queued = 0usize;
+        // 群消息是「一个逻辑消息、N 份投递」:ID 与时间戳全场一致 ——
+        // 每个成员各存各的 ID 时,撤回/引用都无法定位(踩过)。
+        let message_id = MsgId::now_v7();
+        let ts_ms = now_ms();
         for member_hex in &group.members {
             let Ok(member) = NodeId::from_hex(member_hex) else {
                 continue;
             };
-            let envelope = Envelope::direct(
+            let mut envelope = Envelope::direct(
                 self.node_id(),
                 member,
                 Kind::Text(TextBody {
@@ -956,6 +1059,8 @@ impl App {
                     group_name: Some(group.name.clone()),
                 }),
             );
+            envelope.id = message_id;
+            envelope.ts_ms = ts_ms;
             match self.handle.send(envelope.clone()).await {
                 Ok(()) => sent += 1,
                 Err(_) => {
@@ -973,9 +1078,9 @@ impl App {
             }
         }
 
-        // 群历史:每个群只有一条记录(peer = group_id)
+        // 群历史:每个群只有一条记录(peer = group_id;ID 与投递用的消息 ID 一致)
         let saved = NewMessage {
-            id: MsgId::now_v7().to_string(),
+            id: message_id.to_string(),
             peer: group.id.clone(),
             is_outgoing: true,
             from_node: self.node_id().to_hex(),
@@ -983,7 +1088,7 @@ impl App {
             body: Some(body.to_string()),
             format: Some("plain".into()),
             reply_to: reply_to.map(|id| id.to_string()),
-            ts_ms: now_ms(),
+            ts_ms,
             created_ms: now_ms(),
         };
         self.store
@@ -994,7 +1099,7 @@ impl App {
         let _ = self.events.send(AppEvent::MessageSaved {
             peer: self.node_id(),
             outgoing: true,
-            id: MsgId::now_v7(),
+            id: message_id,
         });
         Ok((sent, queued))
     }
@@ -1693,7 +1798,7 @@ async fn event_pump(
                         }
                         // 送达回执 = 待发队列的出队依据(连接中途死亡不会误出队)
                         if delivered.is_some() {
-                            let _ = store.lock().await.remove_pending(&id);
+                            let _ = store.lock().await.remove_pending(&id, &from.to_hex());
                         }
                     }
                     Kind::Typing(typing) => {
@@ -1727,6 +1832,47 @@ async fn event_pump(
                             outgoing: false,
                             id: envelope_id,
                         });
+                    }
+                    Kind::Recall(recall) => {
+                        // 消息撤回:只认「这条消息真正的发送方」发来的请求(防越权);
+                        // 本地没有这条(从未收到)就静默忽略
+                        let id = recall.message_id.to_string();
+                        let meta = match store.lock().await.message_meta(&id) {
+                            Ok(meta) => meta,
+                            Err(e) => {
+                                tracing::warn!(target = "fq_core", %e, "撤回元信息读取失败");
+                                None
+                            }
+                        };
+                        match meta {
+                            Some(meta) if !meta.is_outgoing && meta.from_node == from.to_hex() => {
+                                match store.lock().await.mark_message_recalled(&id) {
+                                    Ok(true) => {
+                                        tracing::info!(target = "fq_core", from = %from, id, "对端撤回了一条消息");
+                                        let _ = out.send(AppEvent::MessageRecalled {
+                                            key: meta.peer.clone(),
+                                            id: id.clone(),
+                                            outgoing: false,
+                                        });
+                                        let _ = out.send(AppEvent::MessageSaved {
+                                            peer: *from,
+                                            outgoing: false,
+                                            id: recall.message_id,
+                                        });
+                                    }
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        tracing::warn!(target = "fq_core", %e, "撤回标记失败")
+                                    }
+                                }
+                            }
+                            Some(_) => {
+                                tracing::warn!(target = "fq_core", from = %from, id, "忽略越权撤回请求");
+                            }
+                            None => {
+                                tracing::debug!(target = "fq_core", from = %from, id, "撤回了本地不存在的消息,忽略");
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -2159,11 +2305,12 @@ async fn flush_pending(
     };
     let now = now_ms();
     let mut sent = 0usize;
+    let peer_hex = peer.to_hex();
     for (id, blob, queued_ms) in queue {
         // 超龄:对端长期无法送达,放弃(避免无限重发)
         if now - queued_ms > PENDING_MAX_AGE {
             tracing::warn!(target = "fq_core", %id, "待发消息超龄,放弃补发");
-            let _ = store.lock().await.remove_pending(&id);
+            let _ = store.lock().await.remove_pending(&id, &peer_hex);
             continue;
         }
         let envelope = match codec::decode(&blob) {
@@ -2171,7 +2318,7 @@ async fn flush_pending(
             Err(e) => {
                 // 队列里的字节是本机写入的,损坏只能丢弃
                 tracing::warn!(target = "fq_core", %e, "待发消息损坏,丢弃");
-                let _ = store.lock().await.remove_pending(&id);
+                let _ = store.lock().await.remove_pending(&id, &peer_hex);
                 continue;
             }
         };

@@ -44,6 +44,8 @@ export interface ChatMessage {
   mentions?: string[];
   /** 被引用的消息 ID(引用回复;渲染时本地查原文) */
   reply_to?: string | null;
+  /** 是否已撤回(渲染成「已撤回」提示,不展示正文) */
+  recalled?: boolean;
 }
 
 export interface SendResult {
@@ -93,7 +95,9 @@ export type FqEvent =
   // 发送中断,后端正在自动重试(第 attempt 次,共 max 次)
   | { type: "transfer_retrying"; token: string; attempt: number; max: number; name: string }
   // 自动重试次数用尽,已放弃本次发送
-  | { type: "transfer_retry_gave_up"; token: string; name: string };
+  | { type: "transfer_retry_gave_up"; token: string; name: string }
+  // 某条消息被撤回(本端或对端)
+  | { type: "message_recalled"; key: string; id: string; outgoing: boolean };
 
 export interface SpeedSample {
   t: number;

@@ -134,6 +134,12 @@ fn all_kinds() -> Vec<Kind> {
         }),
         Kind::Ping(PingBody { nonce: u64::MAX }),
         Kind::Pong(PingBody { nonce: 0 }),
+        Kind::Shake(fq_proto::ShakeBody {
+            reason: Some("提醒看一下".into()),
+        }),
+        Kind::Recall(fq_proto::RecallBody {
+            message_id: fq_proto::MsgId::now_v7(),
+        }),
     ]
 }
 

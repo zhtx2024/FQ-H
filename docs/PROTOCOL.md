@@ -145,6 +145,8 @@ NodeId = SHA-256(Ed25519 公钥)[0..16]        // 16 字节 → 32 字符 hex
 | `text` | `TextBody` | | 文本消息(Markdown 可选) |
 | `ack` | `AckBody` | | 送达 / 已读回执 |
 | `typing` | `TypingBody` | ✅ | 正在输入 |
+| `shake` | `ShakeBody` | | 窗口抖动(老版本忽略,不影响兼容) |
+| `recall` | `RecallBody` | | 消息撤回(按消息 ID 标记) |
 | `file_offer` | `FileOffer` | | 文件/目录要约(含清单) |
 | `file_request` | `FileRequest` | | 请求数据(带 offset,支持续传) |
 | `file_chunk` | `FileChunk` | | 数据分块(bin 编码) |
@@ -221,6 +223,22 @@ A 改头像 → presence(h3) + avatar_request(known=缓存, mine=A的图) ──
 | `TextBody` | `body`(str)、`format`(`plain`/`markdown`)、`reply_to`(MsgId/null)、`mentions`([NodeId])、`group_id`(str/null) |
 | `AckBody` | `ack_id`(MsgId)、`status`(`delivered`/`read`) |
 | `TypingBody` | `state`(`started`/`stopped`)、`thread`(MsgId/null) |
+| `ShakeBody` | `reason`(str/null,附带说明) |
+| `RecallBody` | `message_id`(MsgId,被撤回的消息) |
+
+**引用与撤回只传 ID(0.9.0 / 0.10.0)**
+
+`reply_to` 与 `RecallBody.message_id` 都**不带正文**:消息 ID 是全局唯一 UUIDv7,
+两端各自在自己的历史里查原文 / 标记已撤回。好处是协议不膨胀、历史不被远端文本污染。
+
+撤回的两条硬性约定:
+
+1. **只有发送方能撤回自己的消息**,且默认要求 2 分钟窗口内(`RECALL_WINDOW_MS`);
+   接收方按「这条消息的 `from_node` 是否等于撤回报文的来源」做越权校验,不通过即忽略。
+2. **群消息是「一个逻辑消息、N 份投递」**:`send_group_text` 扇出时所有成员的副本
+   **共用同一个消息 ID 与时间戳**,否则每端各存各的 ID,撤回无法定位到对方的副本。
+
+老版本收到 `recall` 会走 `Unknown` 分支忽略(解码不失败),只是不会隐藏那条消息。
 
 ### 6.3 文件与目录
 

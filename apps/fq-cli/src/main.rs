@@ -311,6 +311,19 @@ async fn handle_line(
                 let n = app.scan_subnet().await;
                 println!("[SCAN] 已向本网段 {n} 个地址发出探测通告(等待对端回发…)");
             }
+            "recall" => {
+                if arg.is_empty() {
+                    eprintln!("[ERROR] 用法:/recall <消息ID>(用 /history 查看)");
+                    return (0, false);
+                }
+                match app.recall_message(arg).await {
+                    Ok(notified) => println!("[RECALL] 已撤回 {arg}(通知 {notified} 个对端)"),
+                    Err(e) => {
+                        eprintln!("[ERROR] 撤回失败: {e}");
+                        return (1, false);
+                    }
+                }
+            }
             "to" => match resolve_peer(app, arg).await {
                 Some((id, name)) => {
                     println!("[OK] 当前会话 → {name} ({id})");
@@ -683,6 +696,10 @@ async fn event_printer(
             }
             AppEvent::TransferRetryGaveUp { name, .. } => {
                 eprintln!("[RETRY] {name} 自动重试失败,已放弃(可手动重发)");
+            }
+            AppEvent::MessageRecalled { id, outgoing, .. } => {
+                let who = if outgoing { "你" } else { "对方" };
+                eprintln!("[RECALL] {who}撤回了一条消息({id})");
             }
             AppEvent::UpdateReady {
                 from,

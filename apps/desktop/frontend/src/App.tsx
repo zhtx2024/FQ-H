@@ -862,6 +862,22 @@ export default function App() {
     [selected, pushToast],
   );
 
+  /** 撤回一条自己发出的消息(2 分钟窗口由后端把关)。 */
+  const doRecallMessage = useCallback(
+    async (m: ChatMessage) => {
+      try {
+        const notified = await api.recallMessage(m.id);
+        pushToast(
+          "info",
+          notified > 0 ? "已撤回" : "已在本地撤回(对方不在线,上线后同步)",
+        );
+      } catch (e) {
+        pushToast("error", `撤回失败:${String(e)}`);
+      }
+    },
+    [pushToast],
+  );
+
   const doScreenshot = useCallback(async () => {
     if (!selected) {
       pushToast("info", "请先选择要发送给的成员或群聊");
@@ -1353,6 +1369,22 @@ export default function App() {
       case "transfer_retry_gave_up":
         pushToast("error", `${event.name} 自动重试失败,已放弃(可重新发送)`);
         break;
+      case "message_recalled": {
+        // 本端或对端撤回:把该条标记为已撤回(对话内渲染成一行提示)
+        setMessages((m) => {
+          const list = m[event.key];
+          if (!list) return m;
+          let changed = false;
+          const next = list.map((item) => {
+            if (item.id !== event.id || item.recalled) return item;
+            changed = true;
+            return { ...item, recalled: true };
+          });
+          return changed ? { ...m, [event.key]: next } : m;
+        });
+        refreshConversations();
+        break;
+      }
       case "update_incoming": {
         // 更新包自动接收:面板里显示进度(无需用户点"接收")
         pushToast("info", `正在从 ${event.from_name} 获取 v${event.version} 更新包…`);
@@ -1685,6 +1717,13 @@ export default function App() {
       : peers.find((p) => p.node_id === msg.from_node)?.name ?? "对方";
 
   /** 引用条里引用内容的摘要(图片/文件/抖动没有正文,给出占位)。 */
+  /** 能否撤回:自己的、未撤回的文本消息,且在 2 分钟窗口内(后端会再校验一次)。 */
+  const canRecall = (msg: ChatMessage): boolean =>
+    Boolean(msg.outgoing) &&
+    !msg.recalled &&
+    msg.kind === "text" &&
+    Date.now() - msg.ts_ms <= 120_000;
+
   const quotePreview = (msg: ChatMessage): string => {
     if (msg.kind === "image") return "[图片]";
     if (msg.kind === "file") {
@@ -2139,7 +2178,12 @@ export default function App() {
                       <div className="time-divider">{formatDivider(m.ts_ms)}</div>
                     )}
 
-                    {m.kind === "shake" ? (
+                    {m.recalled ? (
+                      /* ── 已撤回:只留一行提示(参考微信)── */
+                      <div className="msg-recall">
+                        <span>{isMine ? "你撤回了一条消息" : "对方撤回了一条消息"}</span>
+                      </div>
+                    ) : m.kind === "shake" ? (
                       /* ── 窗口抖动提示(参考 whisper:居中一行小字)── */
                       <div className="msg-shake">
                         <span>{isMine ? "👋 你抖了对方一下" : `👋 ${avatarName} 抖了你一下`}</span>
@@ -2785,6 +2829,17 @@ export default function App() {
             }}
           />
           <div className="context-menu" style={{ left: msgMenu.x, top: msgMenu.y }}>
+            {canRecall(msgMenu.msg) && (
+              <div
+                className="context-item"
+                onClick={() => {
+                  void doRecallMessage(msgMenu.msg);
+                  setMsgMenu(null);
+                }}
+              >
+                ↩️ 撤回
+              </div>
+            )}
             <div
               className="context-item"
               onClick={() => {

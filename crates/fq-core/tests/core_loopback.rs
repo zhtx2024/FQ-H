@@ -1225,6 +1225,291 @@ async fn subnet_scan_discovers_peer_without_broadcast() {
     b.shutdown();
 }
 
+/// 撤回窗口:2 分钟内可撤,超时不可撤(纯函数,确定性验证)。
+#[test]
+fn recall_window_is_two_minutes() {
+    let now = 1_700_000_000_000i64;
+    assert!(fq_core::within_recall_window(now, now), "刚发出可撤");
+    assert!(
+        fq_core::within_recall_window(now - fq_core::RECALL_WINDOW_MS, now),
+        "卡在 2 分钟整可撤"
+    );
+    assert!(
+        !fq_core::within_recall_window(now - fq_core::RECALL_WINDOW_MS - 1, now),
+        "超过 2 分钟不可撤"
+    );
+    assert!(
+        !fq_core::within_recall_window(now - 10 * fq_core::RECALL_WINDOW_MS, now),
+        "很旧的消息不可撤"
+    );
+    // 时钟轻微偏差(对端与本机时间不完全一致)不该导致完全撤不回
+    assert!(fq_core::within_recall_window(now + 30_000, now));
+}
+
+/// 撤回:本地立即标记,对端收到 Recall 后也标记为「已撤回」。
+#[tokio::test]
+async fn recall_travels_and_marks_both_sides() {
+    let (a, b) = start_pair("recall", (26701, 26702), (26711, 26712)).await;
+    let b_id = b.node_id();
+    let a_id = a.node_id();
+
+    let id = a
+        .send_text(b_id, "手滑发错了")
+        .await
+        .unwrap()
+        .message_id()
+        .to_string();
+
+    // 先确认 B 真的收到了
+    eventually(
+        || async {
+            b.history(a_id, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id)
+        },
+        "B 收到待撤回的消息",
+    )
+    .await;
+
+    let mut a_events = a.events();
+    let notified = a.recall_message(&id).await.unwrap();
+    assert_eq!(notified, 1, "单聊撤回应通知 1 个对端");
+
+    // 本端历史标记 + 事件
+    let mine = eventually(
+        || async {
+            a.history(b_id, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id && m.recalled)
+        },
+        "本端历史应标记已撤回",
+    )
+    .await;
+    assert!(mine.is_outgoing, "撤回的是自己发出的那条");
+
+    let recalled_event = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match a_events.recv().await {
+                Ok(fq_core::AppEvent::MessageRecalled {
+                    id: rid, outgoing, ..
+                }) if rid == id => {
+                    break outgoing;
+                }
+                Ok(_) => continue,
+                Err(_) => panic!("事件流关闭"),
+            }
+        }
+    })
+    .await
+    .expect("应收到 MessageRecalled 事件");
+    assert!(recalled_event, "本端撤回的 outgoing 应为 true");
+
+    // 对端历史同样标记(正文不再展示)
+    let theirs = eventually(
+        || async {
+            b.history(a_id, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id && m.recalled)
+        },
+        "对端历史应标记已撤回",
+    )
+    .await;
+    assert!(!theirs.is_outgoing);
+
+    a.shutdown();
+    b.shutdown();
+}
+
+/// 只能撤回自己的消息:撤回对方发来的消息必须被拒绝,且不能改动历史。
+#[tokio::test]
+async fn recall_of_peer_message_is_rejected() {
+    let (a, b) = start_pair("recall-auth", (26721, 26722), (26731, 26732)).await;
+    let b_id = b.node_id();
+
+    let id = b
+        .send_text(a.node_id(), "这是对方的消息")
+        .await
+        .unwrap()
+        .message_id()
+        .to_string();
+    eventually(
+        || async {
+            a.history(b_id, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id)
+        },
+        "A 收到对方的消息",
+    )
+    .await;
+
+    let err = a.recall_message(&id).await.unwrap_err().to_string();
+    assert!(
+        err.contains("只能撤回自己发出的消息"),
+        "应拒绝越权撤回: {err}"
+    );
+    let row = a
+        .history(b_id, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == id)
+        .expect("消息仍在历史里");
+    assert!(!row.recalled, "被拒绝的撤回不应改动历史");
+
+    // 不存在的消息同样报错
+    assert!(a.recall_message("no-such-id").await.is_err());
+
+    a.shutdown();
+    b.shutdown();
+}
+
+/// 对端离线时撤回归入待发队列,等它上线补发 —— 否则对方会一直看到已撤正文。
+#[tokio::test]
+async fn recall_queued_for_offline_peer_is_flushed() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
+    let a_dir = temp_dir("recall-offline-a");
+    let b_dir = temp_dir("recall-offline-b");
+    let a_ports = (26741, 26742);
+    let b_ports = (26751, 26752);
+
+    let a = App::start(app_config(
+        a_dir,
+        "Alice",
+        a_ports,
+        vec![SocketAddr::from(([127, 0, 0, 1], b_ports.0))],
+    ))
+    .await
+    .unwrap();
+    let b = App::start(app_config(
+        b_dir.clone(),
+        "Bob",
+        b_ports,
+        vec![SocketAddr::from(([127, 0, 0, 1], a_ports.0))],
+    ))
+    .await
+    .unwrap();
+    wait_discovery(&a, &b).await;
+    let b_id = b.node_id();
+
+    let id = a
+        .send_text(b_id, "这条稍后会被撤回")
+        .await
+        .unwrap()
+        .message_id()
+        .to_string();
+    eventually(
+        || async {
+            b.history(a.node_id(), 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id)
+        },
+        "B 先收到原消息",
+    )
+    .await;
+
+    // B 下线后撤回 → 必须入队
+    b.shutdown();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let notified = a.recall_message(&id).await.unwrap();
+    assert_eq!(notified, 1, "离线对端也应排定通知(入队)");
+    assert!(a.pending_count().await.unwrap() >= 1, "撤回应进待发队列");
+
+    // B 重新上线 → 队列补发 → 撤回生效
+    let b2 = App::start(app_config(
+        b_dir,
+        "Bob",
+        b_ports,
+        vec![SocketAddr::from(([127, 0, 0, 1], a_ports.0))],
+    ))
+    .await
+    .unwrap();
+    assert_eq!(b2.node_id(), b_id, "同一数据目录重启身份稳定");
+
+    eventually_within(
+        || async {
+            b2.history(a.node_id(), 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id && m.recalled)
+        },
+        "B 回归后收到撤回并标记",
+        Duration::from_secs(15),
+    )
+    .await;
+
+    a.shutdown();
+    b2.shutdown();
+}
+
+/// 群聊撤回:扇出到全部成员,群里那条也被标记。
+#[tokio::test]
+async fn group_recall_fans_out_to_members() {
+    let (a, b) = start_pair("recall-group", (26761, 26762), (26771, 26772)).await;
+    let b_id = b.node_id();
+    let group_id = a.create_group("撤回测试组", &[b_id]).await.unwrap();
+
+    let (sent, queued) = a.send_group_text(&group_id, "群里发错了").await.unwrap();
+    assert_eq!((sent, queued), (1, 0), "B 在线应直发");
+
+    // 等 B 的群历史里出现这条(key 就是 group_id)
+    let id = eventually(
+        || async {
+            b.history_before(&group_id, i64::MAX, 20)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.body.as_deref() == Some("群里发错了"))
+                .map(|m| m.id)
+        },
+        "B 收到群消息",
+    )
+    .await;
+
+    let notified = a.recall_message(&id).await.unwrap();
+    assert_eq!(notified, 1, "群里的 1 个成员都应收到撤回");
+
+    // A 自己的群历史(同样以 group_id 为键)
+    let mine = a
+        .history_before(&group_id, i64::MAX, 20)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == id)
+        .expect("本端群历史应有这条");
+    assert!(mine.recalled, "本端群消息应标记已撤回");
+
+    eventually(
+        || async {
+            b.history_before(&group_id, i64::MAX, 20)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id && m.recalled)
+        },
+        "对端群消息应标记已撤回",
+    )
+    .await;
+
+    a.shutdown();
+    b.shutdown();
+}
+
 /// 轮询直到异步谓词返回 Some(默认 8s 超时)。
 async fn eventually<T, F>(probe: impl FnMut() -> F, what: &str) -> T
 where

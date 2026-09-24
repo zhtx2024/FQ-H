@@ -161,6 +161,9 @@ export const markConversationRead = (peer: string) =>
 /** 扫一遍本网段(广播不可达时的发现兜底),返回探测地址数。 */
 export const scanSubnet = () => invoke<number>("scan_subnet");
 
+/** 撤回一条自己发出的消息(2 分钟窗口内),返回通知到的对端数。 */
+export const recallMessage = (id: string) => invoke<number>("recall_message", { id });
+
 /** 设置会话置顶/免打扰(只传要改的那一项)。 */
 export const setConversationFlags = (
   peer: string,

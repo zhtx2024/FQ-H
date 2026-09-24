@@ -138,6 +138,8 @@ struct MessageDto {
     from_node: String,
     /// 被引用的消息 ID(引用回复;非引用为 null)。
     reply_to: Option<String>,
+    /// 是否已撤回(渲染成「已撤回」提示,不展示正文)。
+    recalled: bool,
 }
 
 fn status_of(
@@ -170,6 +172,7 @@ fn message_dto(
         delivered: m.delivered_ms.is_some(),
         read: m.read_ms.is_some(),
         reply_to: m.reply_to,
+        recalled: m.recalled,
     }
 }
 
@@ -292,6 +295,12 @@ enum FqEventDto {
     TransferRetryGaveUp {
         token: String,
         name: String,
+    },
+    /// 某条消息被撤回(本端或对端)。
+    MessageRecalled {
+        key: String,
+        id: String,
+        outgoing: bool,
     },
 }
 
@@ -433,6 +442,7 @@ pub fn run() {
             set_conversation_flags,
             mark_all_conversations_read,
             scan_subnet,
+            recall_message,
             history_before,
             check_update,
             list_transfer_history,
@@ -555,6 +565,9 @@ async fn forward_events(
             }),
             fq_core::AppEvent::TransferRetryGaveUp { token, name } => {
                 Some(FqEventDto::TransferRetryGaveUp { token, name })
+            }
+            fq_core::AppEvent::MessageRecalled { key, id, outgoing } => {
+                Some(FqEventDto::MessageRecalled { key, id, outgoing })
             }
             fq_core::AppEvent::Node(inner) => match *inner {
                 fq_net::NodeEvent::PeerDiscovered { peer, .. }
@@ -1765,6 +1778,16 @@ async fn mark_all_conversations_read(state: State<'_, FqState>) -> Result<usize,
 #[tauri::command]
 async fn scan_subnet(state: State<'_, FqState>) -> Result<usize, String> {
     Ok(state.app.scan_subnet().await)
+}
+
+/// 撤回一条自己发出的消息(2 分钟窗口内),返回通知到的对端数。
+#[tauri::command]
+async fn recall_message(state: State<'_, FqState>, id: String) -> Result<usize, String> {
+    state
+        .app
+        .recall_message(&id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

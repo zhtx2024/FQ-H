@@ -109,25 +109,28 @@
 
 ```sql
 messages(id PK, peer, is_outgoing, from_node, kind, body, format,
-         ts_ms, created_ms, delivered_ms, read_ms, reply_to)
+         ts_ms, created_ms, delivered_ms, read_ms, reply_to, recalled)
          -- kind: text | image | file;peer 为 NodeId hex 或 group:xxx
          -- reply_to:引用回复指向的消息 ID(只存 ID,正文各端从本地历史取)
+         -- recalled:已撤回标记(保留原条目,渲染成一行提示)
 conversations(peer PK, last_msg_ms, preview, last_read_ms, unread, pinned, muted)
          -- 会话列表:置顶优先 + 活跃排序 + 未读持久化(重启不复活);muted 只留小点
 peers(node_id PK, display_name, host_name, group_name, first_seen_ms, last_seen_ms)
          -- 联系人列表:由发现驱动(删掉的人再发现就回来,见 §8.4)
-pending_messages(id PK, peer, envelope BLOB, queued_ms)  -- 离线队列(原始报文)
+pending_messages(id, peer, envelope BLOB, queued_ms, PK(id, peer))
+         -- 离线队列(原始报文);PK 含 peer —— 群消息同一个 ID 要分别排给多个成员
 groups(id PK, name, members CSV, created_ms)  -- 本地群定义
 transfers(token PK, peer, direction, path, size, status, detail,
           started_ms, finished_ms)           -- 传输历史(v5)
 peer_avatars(node_id PK, sha256, mime, data BLOB, updated_ms)  -- 对端头像缓存(v6)
 ```
 
-迁移采用 **`PRAGMA user_version` 逐级升级**(v0→v1→…→v9),
+迁移采用 **`PRAGMA user_version` 逐级升级**(v0→v1→…→v11),
 每一步都有回归测试(`v1_database_migrates_to_latest_schema` 等),老数据文件永远可打开。
 `peer_avatars` 只缓存**校验通过**的头像:离线联系人也能显示头像(摘要里带回缓存哈希)。
 **v2 的 `hidden_peers` 已在 v7 删除**:删除联系人不再走"永久隐藏",改为飞秋语义(见 §8.4)。
-v8 给会话加 `pinned` / `muted`(置顶排序、免打扰只留小点),v9 给消息加 `reply_to`(引用回复)。
+v8 给会话加 `pinned` / `muted`(置顶排序、免打扰只留小点),v9 给消息加 `reply_to`(引用回复),
+v10 加 `recalled`(消息撤回),v11 把待发队列主键改成 `(id, peer)`(群消息一个 ID 投递给多人)。
 
 ---
 
@@ -319,3 +322,16 @@ React 组件(App.tsx)
 | **传输失败自动重试** | `fq-core` 事件泵只在**发送方向**且失败原因可重试时(中断/超时/分块或完成通知发不出去)重新发起,上限 `SEND_RETRY_MAX = 2`、间隔 2s;重试沿用同一行传输历史(token 改名),并上报 `TransferRetrying` / `TransferRetryGaveUp` | 瞬断是局域网里最常见的问题。取消、对端拒绝、哈希校验失败**不**重试 —— 重来一遍不会有不同结果,只会打扰对方(系统错误文案里的"积极拒绝"≠对端拒绝,分类器按更具体的短语匹配) |
 | **网段直扫发现** | `fq_net::subnet_scan_targets` 枚举每个本机 IPv4 所在 /24 的其余主机(去重、不扫自己);`App::scan_subnet` 逐地址单播通告(2ms 间隔);启动 3s 后自动扫一次(仅通配绑定),设置页与 CLI `/scan` 可手动触发 | 广播常被交换机/安全软件拦掉,`bootstrap` 又要手填 IP。单播探测是幂等小包,未运行本程序的主机不会响应,代价可以忽略 |
 | **界面主题(跟随系统/浅色/深色)** | 模式存 `profile.json`;生效结果由 JS 写到 `<html data-dark="true|false">`,CSS 中所有暗色规则从 `@media (prefers-color-scheme: dark)` 机械改写为 `[data-dark="true"]` 作用域 | 手选主题必须能与系统不一致,媒体查询表达不了"手动覆盖"。启动早期先读 localStorage 缓存,避免"先白后黑"闪屏 |
+
+---
+
+## 12. 0.10.0 新增机制:消息撤回
+
+| 决策 | 做法 | 为什么 |
+|---|---|---|
+| **只传消息 ID** | `RecallBody { message_id }`;两端各自在本地历史里标记 `recalled` | 与引用回复同一思路:不复制正文,协议不膨胀,历史只是"这条没了" |
+| **越权校验在接收侧** | 收到 `recall` 时比对「这条消息的 `from_node`」与「撤回报文来源」,不一致即忽略并告警 | 撤回必须只有发送方能做;不能信任报文里自称的身份 |
+| **时限在发送侧** | `RECALL_WINDOW_MS = 2 分钟`,超时直接报错(UI 也同步隐藏菜单项) | 超时撤回会让对端历史"回退",体感比不能撤回更糟 |
+| **群消息共用一个 ID** | `send_group_text` 扇出时所有副本复用同一个 `MsgId` 与 `ts_ms`,本地群历史也用这个 ID | 每个成员各存各的 ID 时,撤回无法定位对方那份副本(本版踩过并修正) |
+| **离线也撤回** | 撤回报文走与文本相同的"可达即发、不可达入队",不额外重试 | 对方上线后必须看不到已撤正文,否则撤回等于没做 |
+| **撤回后仍保留条目** | 不删行,只置 `recalled`;若该条恰是会话最新消息,`preview` 改 `[已撤回]` | 删行会让历史时间线错位、ID 复用风险高;列表里显示已撤正文则是隐私问题 |

@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::{Error, Result};
 
 /// 当前模式版本(`PRAGMA user_version`)。
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 11;
 
 /// 一条待写入的历史消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +61,21 @@ pub struct StoredMessage {
     pub delivered_ms: Option<i64>,
     /// 对端已读时间(仅发出消息)。
     pub read_ms: Option<i64>,
+    /// 是否已撤回(双方历史都保留这一条,渲染成「已撤回」提示)。
+    pub recalled: bool,
+}
+
+/// 一条消息的元信息(撤回时的越权/时限校验用)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageMeta {
+    /// 会话键(NodeId hex 或 `group:...`)。
+    pub peer: String,
+    /// 实际发送方(NodeId hex)。
+    pub from_node: String,
+    /// 是否本端发出。
+    pub is_outgoing: bool,
+    /// 报文时间戳(Unix 毫秒;撤回时限按它算)。
+    pub ts_ms: i64,
 }
 
 /// 一条传输历史记录。
@@ -347,6 +362,39 @@ impl Store {
             )?;
         }
 
+        // ── v9 → v10:消息撤回(保留原条目,只标记"已撤回",避免历史错位)──
+        if version < 10 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE messages ADD COLUMN recalled INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 10;
+                 COMMIT;",
+            )?;
+        }
+
+        // ── v10 → v11:待发队列主键改为 (id, peer)──
+        // 群消息现在"一个消息 ID 投递给 N 个成员":若有多个成员同时离线,
+        // 旧的 `id` 单列主键会让后入队的成员**覆盖**前一个(消息丢失)。
+        if version < 11 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE pending_messages_v11 (
+                     id         TEXT NOT NULL,
+                     peer       TEXT NOT NULL,
+                     envelope   BLOB NOT NULL,
+                     queued_ms  INTEGER NOT NULL,
+                     PRIMARY KEY (id, peer)
+                 );
+                 INSERT OR IGNORE INTO pending_messages_v11 (id, peer, envelope, queued_ms)
+                     SELECT id, peer, envelope, queued_ms FROM pending_messages;
+                 DROP TABLE pending_messages;
+                 ALTER TABLE pending_messages_v11 RENAME TO pending_messages;
+                 CREATE INDEX IF NOT EXISTS idx_pending_peer ON pending_messages(peer, queued_ms);
+                 PRAGMA user_version = 11;
+                 COMMIT;",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -584,7 +632,7 @@ impl Store {
     ) -> Result<Vec<StoredMessage>> {
         let mut statement = self.conn.prepare(
             "SELECT id, peer, is_outgoing, from_node, kind, body, format,
-                    ts_ms, created_ms, delivered_ms, read_ms, reply_to
+                    ts_ms, created_ms, delivered_ms, read_ms, reply_to, recalled
              FROM messages
              WHERE peer = ?1 AND ts_ms < ?2
              ORDER BY ts_ms DESC
@@ -605,11 +653,55 @@ impl Store {
                     delivered_ms: row.get(9)?,
                     read_ms: row.get(10)?,
                     reply_to: row.get(11)?,
+                    recalled: row.get::<_, i64>(12)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.reverse();
         Ok(rows)
+    }
+
+    /// 一条消息的元信息;不存在返回 None。
+    ///
+    /// 撤回前用它做**越权/时限校验**:只有「这条消息真正的发送方」能在窗口内撤回。
+    pub fn message_meta(&self, id: &str) -> Result<Option<MessageMeta>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT peer, from_node, is_outgoing, ts_ms FROM messages WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(MessageMeta {
+                        peer: row.get(0)?,
+                        from_node: row.get(1)?,
+                        is_outgoing: row.get::<_, i64>(2)? != 0,
+                        ts_ms: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// 标记一条消息为「已撤回」(历史保留,只改展示);返回是否命中记录。
+    ///
+    /// 顺带把会话预览改成 `[已撤回]`(仅当这条恰好是该会话最新消息时),
+    /// 否则列表里会一直显示已经撤掉的正文。
+    pub fn mark_message_recalled(&self, id: &str) -> Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE messages SET recalled = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        if updated == 0 {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE conversations SET preview = '[已撤回]'
+             WHERE peer = (SELECT peer FROM messages WHERE id = ?1)
+               AND last_msg_ms <= (SELECT ts_ms FROM messages WHERE id = ?1)",
+            params![id],
+        )?;
+        Ok(true)
     }
 
     /// 更新回执(送达/已读)。返回是否真的更新了行。
@@ -633,7 +725,7 @@ impl Store {
     pub fn history(&self, peer: &str, limit: u32) -> Result<Vec<StoredMessage>> {
         let mut statement = self.conn.prepare(
             "SELECT id, peer, is_outgoing, from_node, kind, body, format,
-                    ts_ms, created_ms, delivered_ms, read_ms, reply_to
+                    ts_ms, created_ms, delivered_ms, read_ms, reply_to, recalled
              FROM messages
              WHERE peer = ?1
              ORDER BY ts_ms DESC, created_ms DESC
@@ -654,6 +746,7 @@ impl Store {
                     delivered_ms: row.get(9)?,
                     read_ms: row.get(10)?,
                     reply_to: row.get(11)?,
+                    recalled: row.get::<_, i64>(12)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -670,7 +763,7 @@ impl Store {
         let pattern = format!("%{escaped}%");
         let mut statement = self.conn.prepare(
             "SELECT id, peer, is_outgoing, from_node, kind, body, format,
-                    ts_ms, created_ms, delivered_ms, read_ms, reply_to
+                    ts_ms, created_ms, delivered_ms, read_ms, reply_to, recalled
              FROM messages
              WHERE body LIKE ?1 ESCAPE '\\'
              ORDER BY ts_ms DESC
@@ -691,6 +784,7 @@ impl Store {
                     delivered_ms: row.get(9)?,
                     read_ms: row.get(10)?,
                     reply_to: row.get(11)?,
+                    recalled: row.get::<_, i64>(12)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -737,10 +831,13 @@ impl Store {
         Ok(count as usize)
     }
 
-    /// 移除一条已发出的待发消息。
-    pub fn remove_pending(&self, id: &str) -> Result<()> {
+    /// 移除一条已发出的待发消息(同一条消息可能分别排给多个成员,故需带上 peer)。
+    pub fn remove_pending(&self, id: &str, peer: &str) -> Result<()> {
         self.conn
-            .execute("DELETE FROM pending_messages WHERE id = ?1", params![id])
+            .execute(
+                "DELETE FROM pending_messages WHERE id = ?1 AND peer = ?2",
+                params![id, peer],
+            )
             .map(|_| ())
             .map_err(Error::Sqlite)
     }
@@ -1171,9 +1268,23 @@ mod tests {
         assert_eq!(queue[0], ("q1".to_string(), b"env-1".to_vec(), 1));
         assert_eq!(queue[1], ("q2".to_string(), b"env-2".to_vec(), 2));
 
-        store.remove_pending("q1").unwrap();
+        store.remove_pending("q1", "p").unwrap();
         assert_eq!(store.pending_count().unwrap(), 2);
         assert_eq!(store.pending("p").unwrap()[0].0, "q2");
+
+        // 同一个消息 ID 可以分别排给多个成员(群消息扇出);互不影响:
+        // 清掉其中一个成员的队列,另一个仍在
+        store.enqueue("grp-1", "p", b"to-p", 4).unwrap();
+        store.enqueue("grp-1", "other", b"to-other", 5).unwrap();
+        assert_eq!(store.pending_count().unwrap(), 4);
+        store.remove_pending("grp-1", "p").unwrap();
+        assert_eq!(
+            store.pending("other").unwrap().len(),
+            2,
+            "另一个成员的副本应保留"
+        );
+        store.remove_pending("grp-1", "other").unwrap();
+        assert_eq!(store.pending_count().unwrap(), 2);
     }
 
     #[test]
@@ -1412,6 +1523,44 @@ mod tests {
     }
 
     #[test]
+    fn recall_marks_message_and_updates_preview() {
+        let store = Store::open_in_memory().unwrap();
+        let msg = message("r1", "peer-r", true, 100, "手滑发错了");
+        store.insert_message(&msg).unwrap();
+        store
+            .insert_message(&message("r2", "peer-r", false, 200, "对方的话"))
+            .unwrap();
+
+        // 元信息:越权校验用
+        let meta = store.message_meta("r1").unwrap().unwrap();
+        assert_eq!(meta.peer, "peer-r");
+        assert_eq!(meta.from_node, "me");
+        assert!(meta.is_outgoing);
+        assert_eq!(meta.ts_ms, 100);
+        assert_eq!(store.message_meta("查无此条").unwrap(), None);
+
+        // 撤回一条"不是最新"的消息:预览不受影响
+        assert!(store.mark_message_recalled("r1").unwrap());
+        assert_eq!(store.list_conversations().unwrap()[0].preview, "对方的话");
+        assert!(
+            store
+                .history("peer-r", 10)
+                .unwrap()
+                .iter()
+                .find(|m| m.id == "r1")
+                .unwrap()
+                .recalled
+        );
+
+        // 撤回最新一条:预览变成 [已撤回]
+        assert!(store.mark_message_recalled("r2").unwrap());
+        assert_eq!(store.list_conversations().unwrap()[0].preview, "[已撤回]");
+
+        // 不存在的 ID:返回 false 而不是报错
+        assert!(!store.mark_message_recalled("nope").unwrap());
+    }
+
+    #[test]
     fn conversation_preview_summarizes_media() {
         let store = Store::open_in_memory().unwrap();
         let mut img = message("i1", "peer-x", false, 100, "");
@@ -1454,12 +1603,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fq.db");
         {
-            // 模拟 v1 库:只有三张表
+            // 模拟 v1 库:三张表(messages/peers 只建主键即可,pending_messages
+            // 需要真实列 —— v11 迁移会读它的 id/peer/envelope/queued_ms)
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
                 "CREATE TABLE messages (id TEXT PRIMARY KEY);
                  CREATE TABLE peers (node_id TEXT PRIMARY KEY);
-                 CREATE TABLE pending_messages (id TEXT PRIMARY KEY);
+                 CREATE TABLE pending_messages (
+                     id         TEXT PRIMARY KEY,
+                     peer       TEXT NOT NULL,
+                     envelope   BLOB NOT NULL,
+                     queued_ms  INTEGER NOT NULL
+                 );
                  PRAGMA user_version = 1;",
             )
             .unwrap();

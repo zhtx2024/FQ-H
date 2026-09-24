@@ -428,6 +428,16 @@ pub struct ShakeBody {
     pub reason: Option<String>,
 }
 
+/// 撤回消息(仅发送方在时限内可撤回自己的消息)。
+///
+/// 只带被撤回的消息 ID —— 消息 ID 是全局唯一 UUIDv7,接收方按 ID 在自己的
+/// 历史里标记为「已撤回」即可,不需要复制正文(与引用回复同一思路)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallBody {
+    /// 被撤回的消息 ID。
+    pub message_id: MsgId,
+}
+
 /// 头像内容(整图一次发完;接收方**必须**校验 SHA-256)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvatarPayload {
@@ -559,6 +569,8 @@ pub enum Kind {
     Typing(TypingBody),
     /// 窗口抖动(飞秋经典功能;老版本会忽略,不影响兼容)。
     Shake(ShakeBody),
+    /// 消息撤回(接收方按消息 ID 标记为已撤回;老版本会走 Unknown 分支忽略)。
+    Recall(RecallBody),
     /// 文件要约。
     FileOffer(FileOffer),
     /// 更新包要约(接收方自动接收并走安装流程)。
@@ -595,6 +607,7 @@ impl Kind {
             Kind::Ack(_) => "ack",
             Kind::Typing(_) => "typing",
             Kind::Shake(_) => "shake",
+            Kind::Recall(_) => "recall",
             Kind::FileOffer(_) => "file_offer",
             Kind::UpdateOffer(_) => "update_offer",
             Kind::UpdateRequest(_) => "update_request",

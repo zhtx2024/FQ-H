@@ -26,5 +26,6 @@ pub mod store;
 
 pub use error::{Error, Result};
 pub use store::{
-    ConversationRecord, GroupRecord, NewMessage, PeerRecord, Store, StoredMessage, TransferRecord,
+    ConversationRecord, GroupRecord, MessageMeta, NewMessage, PeerRecord, Store, StoredMessage,
+    TransferRecord,
 };
