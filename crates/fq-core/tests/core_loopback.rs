@@ -327,6 +327,223 @@ async fn cancel_sender_transfer_midway_reports_cancelled() {
     b.shutdown();
 }
 
+/// 发送中断会自动重试(上限 [`fq_core::SEND_RETRY_MAX`] 次),用尽后明确放弃。
+///
+/// 场景:对端在传输中途退出 → 发送方拿到"发送分块失败"(可重试),随后应看到
+/// 第 1、2 次重试事件与最终的放弃事件;重试期间对端已不在,重新发起的会话不会建立。
+#[tokio::test]
+async fn send_failure_auto_retries_then_gives_up() {
+    let mut a_cfg = app_config(
+        temp_dir("sendretry-a"),
+        "Alice",
+        (26541, 26542),
+        vec![SocketAddr::from(([127, 0, 0, 1], 26551))],
+    );
+    // 限速,保证"传输中"这一窗口足够长(8 MiB @ 4 MiB/s ≈ 2s)
+    a_cfg.send_limit_bytes = 4 * 1024 * 1024;
+    let a = App::start(a_cfg).await.unwrap();
+    let b = App::start(app_config(
+        temp_dir("sendretry-b"),
+        "Bob",
+        (26551, 26552),
+        vec![SocketAddr::from(([127, 0, 0, 1], 26541))],
+    ))
+    .await
+    .unwrap();
+    wait_discovery(&a, &b).await;
+
+    let src_dir = temp_dir("sendretry-src");
+    let src = src_dir.join("中断重试.bin");
+    std::fs::write(&src, vec![0x33u8; 8 * 1024 * 1024]).unwrap();
+
+    let mut a_events = a.events();
+    a.send_file(b.node_id(), &src, None).await.unwrap();
+
+    // 等第一条进度(确实传起来了),然后拔掉接收方
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("10s 内未开始传输");
+        }
+        match tokio::time::timeout(Duration::from_millis(500), a_events.recv()).await {
+            Ok(Ok(AppEvent::Node(inner))) => {
+                if let NodeEvent::FileProgress { .. } = *inner {
+                    break;
+                }
+            }
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => panic!("事件流关闭"),
+        }
+    }
+    b.shutdown();
+
+    // 收集:可重试的失败原因 → 重试事件 → 放弃事件
+    let mut reason: Option<String> = None;
+    let mut attempts: Vec<u8> = Vec::new();
+    let mut gave_up = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    while tokio::time::Instant::now() < deadline && !gave_up {
+        match tokio::time::timeout(Duration::from_millis(500), a_events.recv()).await {
+            Ok(Ok(AppEvent::Node(inner))) => {
+                if let NodeEvent::FileTransferFailed {
+                    direction,
+                    reason: r,
+                    ..
+                } = *inner
+                {
+                    if direction == fq_net::TransferDirection::Sending {
+                        reason = Some(r);
+                    }
+                }
+            }
+            Ok(Ok(AppEvent::TransferRetrying { attempt, .. })) => attempts.push(attempt),
+            Ok(Ok(AppEvent::TransferRetryGaveUp { .. })) => gave_up = true,
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => panic!("事件流关闭"),
+        }
+    }
+
+    let reason = reason.expect("应收到发送失败事件");
+    assert!(
+        fq_core::is_retryable_send_failure(&reason),
+        "传输中断应判为可重试: {reason}"
+    );
+    assert_eq!(
+        attempts,
+        (1..=fq_core::SEND_RETRY_MAX).collect::<Vec<_>>(),
+        "应依次重试到上限"
+    );
+    assert!(gave_up, "重试用尽后应发出放弃事件");
+
+    // 历史里保留一条该文件的记录(不因重试变成多条)
+    let history = a.transfer_history(20).await.unwrap();
+    let rows: Vec<_> = history
+        .iter()
+        .filter(|t| t.path == "中断重试.bin")
+        .collect();
+    assert_eq!(rows.len(), 1, "重试应沿用同一行历史: {rows:?}");
+    assert_eq!(rows[0].status, "failed", "最终状态应为失败");
+
+    a.shutdown();
+}
+
+/// 对端"拒绝接收"不是链路问题,不该自动重试(否则等于反复骚扰对方)。
+#[tokio::test]
+async fn rejected_transfer_is_not_retried() {
+    let a = App::start(app_config(
+        temp_dir("noretry-a"),
+        "Alice",
+        (26561, 26562),
+        vec![SocketAddr::from(([127, 0, 0, 1], 26571))],
+    ))
+    .await
+    .unwrap();
+    // B 不自动接收:等用户裁决(此处由测试显式拒绝)
+    let mut b_cfg = app_config(
+        temp_dir("noretry-b"),
+        "Bob",
+        (26571, 26572),
+        vec![SocketAddr::from(([127, 0, 0, 1], 26561))],
+    );
+    b_cfg.auto_accept_files = false;
+    let b = App::start(b_cfg).await.unwrap();
+    wait_discovery(&a, &b).await;
+
+    let src_dir = temp_dir("noretry-src");
+    let src = src_dir.join("会被拒绝.bin");
+    std::fs::write(&src, vec![0x11u8; 512 * 1024]).unwrap();
+
+    let mut a_events = a.events();
+    let mut b_events = b.events();
+    a.send_file(b.node_id(), &src, None).await.unwrap();
+
+    // B 收到要约 → 明确拒绝
+    let offer_token = loop {
+        match tokio::time::timeout(Duration::from_secs(10), b_events.recv()).await {
+            Ok(Ok(AppEvent::Node(inner))) => {
+                if let NodeEvent::FileOfferReceived { token, .. } = *inner {
+                    break token;
+                }
+            }
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => panic!("事件流关闭"),
+        }
+    };
+    assert!(b.reject_file_offer(&offer_token), "拒绝应命中会话");
+
+    // A 收到失败原因,且判定为"不可重试"
+    let mut reason: Option<String> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline && reason.is_none() {
+        match tokio::time::timeout(Duration::from_millis(500), a_events.recv()).await {
+            Ok(Ok(AppEvent::Node(inner))) => {
+                if let NodeEvent::FileTransferFailed {
+                    direction,
+                    reason: r,
+                    ..
+                } = *inner
+                {
+                    if direction == fq_net::TransferDirection::Sending {
+                        reason = Some(r);
+                    }
+                }
+            }
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => panic!("事件流关闭"),
+        }
+    }
+    let reason = reason.expect("应收到发送失败事件");
+    assert!(
+        !fq_core::is_retryable_send_failure(&reason),
+        "拒绝不应判为可重试: {reason}"
+    );
+
+    // 静默观察窗(> 重试间隔):不应冒出任何重试事件
+    let until = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < until {
+        match tokio::time::timeout(Duration::from_millis(300), a_events.recv()).await {
+            Ok(Ok(AppEvent::TransferRetrying { .. }))
+            | Ok(Ok(AppEvent::TransferRetryGaveUp { .. })) => {
+                panic!("被拒绝的发送不应自动重试");
+            }
+            Ok(Ok(_)) | Err(_) => continue,
+            Ok(Err(_)) => panic!("事件流关闭"),
+        }
+    }
+
+    a.shutdown();
+    b.shutdown();
+}
+
+/// 失败分类:瞬断/超时重试,取消/拒绝/中止/校验失败不重试。
+#[test]
+fn send_failure_classification_matches_intent() {
+    for retryable in [
+        "发送分块失败: 连接被对端重置",
+        "发送完成通知失败: 管道已关闭",
+        "对端长时间未请求下一文件,传输超时",
+        "传输中断或超时(.part 已保留,可续传)",
+        // 系统错误文案含"拒绝"二字,但它是瞬断,必须可重试
+        "发送分块失败: IO 错误: 由于目标计算机积极拒绝,无法连接。(os error 10061)",
+    ] {
+        assert!(
+            fq_core::is_retryable_send_failure(retryable),
+            "应判为可重试: {retryable}"
+        );
+    }
+    for fatal in [
+        "已取消发送",
+        "对方中止:已拒绝接收",
+        "对方中止:SHA-256 校验失败,已丢弃数据",
+        "读取失败: 文件不存在",
+    ] {
+        assert!(
+            !fq_core::is_retryable_send_failure(fatal),
+            "不应判为可重试: {fatal}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn transfer_history_records_done_and_clear_works() {
     let download_b = temp_dir("thist-recv");
@@ -882,7 +1099,7 @@ async fn group_mentions_travel_with_message() {
     let mut b_events = b.events();
 
     let (sent, queued) = a
-        .send_group_text_mentions(&group_id, "@Bob 看一下这个", vec![b_id])
+        .send_group_text_mentions(&group_id, "@Bob 看一下这个", vec![b_id], None)
         .await
         .unwrap();
     assert_eq!(sent, 1, "B 在线应直发");
@@ -909,6 +1126,100 @@ async fn group_mentions_travel_with_message() {
         mentions.contains(&b_id),
         "@ 列表里应包含被 @ 的节点,实际: {mentions:?}"
     );
+
+    a.shutdown();
+    b.shutdown();
+}
+
+/// 引用回复:`reply_to` 随消息送达,双方历史里都保留引用关系(渲染时本地查原文)。
+#[tokio::test]
+async fn quoted_reply_travels_and_persists() {
+    let (a, b) = start_pair("quote", (26581, 26582), (26591, 26592)).await;
+    let a_id = a.node_id();
+    let b_id = b.node_id();
+
+    // A 发原始消息,B 引用它回复
+    let original = a
+        .send_text(b_id, "原始消息")
+        .await
+        .unwrap()
+        .message_id()
+        .to_string();
+    let reply_id = b
+        .send_text_mentions(
+            a_id,
+            "引用回复",
+            Vec::new(),
+            Some(fq_proto::MsgId::parse(&original).unwrap()),
+        )
+        .await
+        .unwrap()
+        .message_id()
+        .to_string();
+
+    // B 自己的历史:发出的引用消息带 reply_to
+    let b_hist = b.history(a_id, 20).await.unwrap();
+    let outgoing = b_hist
+        .iter()
+        .find(|m| m.id == reply_id)
+        .expect("B 历史里应有这条回复");
+    assert_eq!(
+        outgoing.reply_to.as_deref(),
+        Some(original.as_str()),
+        "发出的引用消息应记录被引用 ID"
+    );
+
+    // A 收到后落库,同样带 reply_to(引用只传 ID,正文各端自己查)
+    let stored = eventually(
+        || async {
+            let rows = a.history(b_id, 20).await.unwrap_or_default();
+            rows.into_iter().find(|m| m.id == reply_id)
+        },
+        "A 应收到引用回复并落库",
+    )
+    .await;
+    assert_eq!(stored.reply_to.as_deref(), Some(original.as_str()));
+    assert_eq!(stored.body.as_deref(), Some("引用回复"));
+
+    a.shutdown();
+    b.shutdown();
+}
+
+/// 网段直扫:没有广播、没有 bootstrap,仅靠 /24 单播通告也能互相发现(兜底能力)。
+#[tokio::test]
+async fn subnet_scan_discovers_peer_without_broadcast() {
+    let ip = |last: u8| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, last));
+    // 同一回环 /24 的两个地址、同一发现端口:互相不给 bootstrap,广播也不可达
+    let mut a_cfg = app_config(temp_dir("scan-a"), "Alice", (26601, 26602), vec![]);
+    a_cfg.bind = ip(1);
+    let a = App::start(a_cfg).await.unwrap();
+    let mut b_cfg = app_config(temp_dir("scan-b"), "Bob", (26601, 26602), vec![]);
+    b_cfg.bind = ip(2);
+    let b = App::start(b_cfg).await.unwrap();
+
+    assert!(
+        a.node().peer(&b.node_id()).is_none(),
+        "直扫前双方不应互相知道"
+    );
+
+    let probed = a.scan_subnet().await;
+    assert!(probed > 200, "应扫过整个 /24,实际 {probed} 个地址");
+
+    // B 收到 A 的单播通告后回发,A 随即也认识 B
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        if a.node().peer(&b.node_id()).is_some() && b.node().peer(&a.node_id()).is_some() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "8s 内直扫未能互相发现: a_peers={:?} b_peers={:?}",
+                a.node().peers().len(),
+                b.node().peers().len()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     a.shutdown();
     b.shutdown();

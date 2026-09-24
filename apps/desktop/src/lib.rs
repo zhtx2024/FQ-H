@@ -51,6 +51,8 @@ struct Profile {
     status: Option<String>,
     /// 发送方向限速(字节/秒;0 = 不限速)。
     send_limit_bytes: Option<u64>,
+    /// 界面主题(system / light / dark;缺省跟随系统)。
+    theme: Option<String>,
 }
 
 fn load_profile(dir: &std::path::Path) -> Profile {
@@ -134,6 +136,8 @@ struct MessageDto {
     status: String,
     /// 发送方 NodeId(群聊里显示是谁发的)。
     from_node: String,
+    /// 被引用的消息 ID(引用回复;非引用为 null)。
+    reply_to: Option<String>,
 }
 
 fn status_of(
@@ -165,6 +169,7 @@ fn message_dto(
         ts_ms: m.ts_ms,
         delivered: m.delivered_ms.is_some(),
         read: m.read_ms.is_some(),
+        reply_to: m.reply_to,
     }
 }
 
@@ -195,6 +200,8 @@ enum FqEventDto {
         ts_ms: i64,
         /// 被 @ 的节点(群聊 @提醒用;单聊为空)。
         mentions: Vec<String>,
+        /// 被引用的消息 ID(引用回复)。
+        reply_to: Option<String>,
     },
     Delivered {
         id: String,
@@ -273,6 +280,18 @@ enum FqEventDto {
         from: String,
         from_name: String,
         started: bool,
+    },
+    /// 发送中断,正在自动重试(第 attempt 次,共 max 次)。
+    TransferRetrying {
+        token: String,
+        attempt: u8,
+        max: u8,
+        name: String,
+    },
+    /// 自动重试次数用尽,已放弃本次发送。
+    TransferRetryGaveUp {
+        token: String,
+        name: String,
     },
 }
 
@@ -411,6 +430,9 @@ pub fn run() {
             send_group_text,
             list_conversations,
             mark_conversation_read,
+            set_conversation_flags,
+            mark_all_conversations_read,
+            scan_subnet,
             history_before,
             check_update,
             list_transfer_history,
@@ -423,6 +445,7 @@ pub fn run() {
             set_auto_update,
             set_status,
             set_transfer_limit,
+            set_theme,
             probe_peer,
             add_firewall_rules,
             choose_avatar,
@@ -519,6 +542,20 @@ async fn forward_events(
                 from_name: name_of(from),
                 started,
             }),
+            fq_core::AppEvent::TransferRetrying {
+                token,
+                attempt,
+                max,
+                name,
+            } => Some(FqEventDto::TransferRetrying {
+                token,
+                attempt,
+                max,
+                name,
+            }),
+            fq_core::AppEvent::TransferRetryGaveUp { token, name } => {
+                Some(FqEventDto::TransferRetryGaveUp { token, name })
+            }
             fq_core::AppEvent::Node(inner) => match *inner {
                 fq_net::NodeEvent::PeerDiscovered { peer, .. }
                 | fq_net::NodeEvent::PeerUpdated { peer, .. } => {
@@ -554,6 +591,7 @@ async fn forward_events(
                         body: body.body,
                         ts_ms: envelope.ts_ms,
                         mentions: body.mentions.iter().map(|id| id.to_hex()).collect(),
+                        reply_to: body.reply_to.map(|id| id.to_string()),
                     }),
                     fq_proto::Kind::Ack(ack) => match ack.status {
                         fq_proto::AckStatus::Delivered => Some(FqEventDto::Delivered {
@@ -1088,6 +1126,8 @@ struct PreferencesDto {
     log_dir: String,
     /// 当前 TCP 监听端口(防火墙放行规则用)。
     listen_port: u16,
+    /// 界面主题(system / light / dark)。
+    theme: String,
 }
 
 /// 读取偏好设置(通用设置页需要)。
@@ -1102,7 +1142,20 @@ fn get_preferences(state: State<'_, FqState>) -> Result<PreferencesDto, String> 
         data_dir: state.app.data_dir().display().to_string(),
         log_dir: state.app.data_dir().join("logs").display().to_string(),
         listen_port: state.app.node().listen_port(),
+        theme: profile.theme.unwrap_or_else(|| "system".into()),
     })
+}
+
+/// 设置界面主题(system / light / dark),持久化到 profile.json。
+#[tauri::command]
+fn set_theme(state: State<'_, FqState>, theme: String) -> Result<(), String> {
+    let theme = match theme.as_str() {
+        "light" | "dark" | "system" => theme,
+        other => return Err(format!("未知主题: {other}")),
+    };
+    let mut profile = load_profile(state.app.data_dir());
+    profile.theme = Some(theme);
+    save_profile(state.app.data_dir(), &profile)
 }
 
 /// 设置在线状态(online / away / busy / dnd)并立即通告。
@@ -1327,6 +1380,7 @@ async fn send_text(
     node_id: String,
     body: String,
     mentions: Option<Vec<String>>,
+    reply_to: Option<String>,
 ) -> Result<SendResultDto, String> {
     let to = parse_node_id(&node_id)?;
     let mention_ids: Vec<fq_proto::NodeId> = mentions
@@ -1334,9 +1388,12 @@ async fn send_text(
         .iter()
         .filter_map(|raw| fq_proto::NodeId::from_hex(raw).ok())
         .collect();
+    let reply_id = reply_to
+        .as_deref()
+        .and_then(|raw| fq_proto::MsgId::parse(raw).ok());
     let outcome = state
         .app
-        .send_text_mentions(to, &body, mention_ids)
+        .send_text_mentions(to, &body, mention_ids, reply_id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(SendResultDto {
@@ -1458,15 +1515,19 @@ async fn send_group_text(
     group_id: String,
     body: String,
     mentions: Option<Vec<String>>,
+    reply_to: Option<String>,
 ) -> Result<(usize, usize), String> {
     let mention_ids: Vec<fq_proto::NodeId> = mentions
         .unwrap_or_default()
         .iter()
         .filter_map(|raw| fq_proto::NodeId::from_hex(raw).ok())
         .collect();
+    let reply_id = reply_to
+        .as_deref()
+        .and_then(|raw| fq_proto::MsgId::parse(raw).ok());
     state
         .app
-        .send_group_text_mentions(&group_id, &body, mention_ids)
+        .send_group_text_mentions(&group_id, &body, mention_ids, reply_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1478,6 +1539,10 @@ struct ConversationDto {
     last_msg_ms: i64,
     preview: String,
     unread: u32,
+    /// 是否置顶(置顶排最前)。
+    pinned: bool,
+    /// 是否免打扰(未读只显示小点,不弹提示)。
+    muted: bool,
 }
 
 #[derive(Serialize)]
@@ -1654,6 +1719,8 @@ async fn list_conversations(state: State<'_, FqState>) -> Result<Vec<Conversatio
                     last_msg_ms: c.last_msg_ms,
                     preview: c.preview,
                     unread: c.unread,
+                    pinned: c.pinned,
+                    muted: c.muted,
                 })
                 .collect()
         })
@@ -1667,6 +1734,37 @@ async fn mark_conversation_read(state: State<'_, FqState>, peer: String) -> Resu
         .mark_conversation_read(&peer)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 置顶/免打扰:只传要改的那一项(另一项传 null 表示不动)。
+#[tauri::command]
+async fn set_conversation_flags(
+    state: State<'_, FqState>,
+    peer: String,
+    pinned: Option<bool>,
+    muted: Option<bool>,
+) -> Result<(), String> {
+    state
+        .app
+        .set_conversation_flags(&peer, pinned, muted)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 一键全部已读,返回受影响的会话数。
+#[tauri::command]
+async fn mark_all_conversations_read(state: State<'_, FqState>) -> Result<usize, String> {
+    state
+        .app
+        .mark_all_conversations_read()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 扫描本网段(广播被交换机/安全软件拦截时的兜底发现),返回探测的地址数。
+#[tauri::command]
+async fn scan_subnet(state: State<'_, FqState>) -> Result<usize, String> {
+    Ok(state.app.scan_subnet().await)
 }
 
 #[tauri::command]

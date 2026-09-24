@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "fq-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "fq-core",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "fq-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "fq-crypto",
  "fq-net",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "fq-crypto"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ed25519-dalek",
  "fq-proto",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "fq-desktop"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arboard",
  "fq-core",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "fq-net"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "fq-crypto",
  "fq-proto",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "fq-proto"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bitflags 2.13.2",
  "hex",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "fq-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "rusqlite",
  "tempfile",

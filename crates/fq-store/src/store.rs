@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::error::{Error, Result};
 
 /// 当前模式版本(`PRAGMA user_version`)。
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 9;
 
 /// 一条待写入的历史消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,8 @@ pub struct NewMessage {
     pub body: Option<String>,
     /// 文本格式(plain/markdown)。
     pub format: Option<String>,
+    /// 被引用的消息 ID(引用回复;非引用为 None)。
+    pub reply_to: Option<String>,
     /// 报文时间戳(Unix 毫秒)。
     pub ts_ms: i64,
     /// 本地入库时间(Unix 毫秒)。
@@ -49,6 +51,8 @@ pub struct StoredMessage {
     pub body: Option<String>,
     /// 文本格式。
     pub format: Option<String>,
+    /// 被引用的消息 ID(引用回复;非引用为 None)。
+    pub reply_to: Option<String>,
     /// 报文时间戳。
     pub ts_ms: i64,
     /// 入库时间。
@@ -95,6 +99,10 @@ pub struct ConversationRecord {
     pub last_read_ms: i64,
     /// 未读条数。
     pub unread: u32,
+    /// 是否置顶(置顶会话排在最前)。
+    pub pinned: bool,
+    /// 是否免打扰(不显示未读数,只留一个小点)。
+    pub muted: bool,
 }
 
 /// 一个群组记录。
@@ -318,6 +326,27 @@ impl Store {
             )?;
         }
 
+        // ── v7 → v8:会话置顶/免打扰(微信手感:置顶排最前、免打扰只留小点)──
+        if version < 8 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE conversations ADD COLUMN muted  INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 8;
+                 COMMIT;",
+            )?;
+        }
+
+        // ── v8 → v9:引用回复(消息记录"引用了哪条消息",渲染时本地查原文)──
+        if version < 9 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE messages ADD COLUMN reply_to TEXT;
+                 PRAGMA user_version = 9;
+                 COMMIT;",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -401,8 +430,8 @@ impl Store {
             .conn
             .execute(
                 "INSERT OR IGNORE INTO messages
-                   (id, peer, is_outgoing, from_node, kind, body, format, ts_ms, created_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                   (id, peer, is_outgoing, from_node, kind, body, format, ts_ms, created_ms, reply_to)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     message.id,
                     message.peer,
@@ -413,6 +442,7 @@ impl Store {
                     message.format,
                     message.ts_ms,
                     message.created_ms,
+                    message.reply_to,
                 ],
             )
             .map_err(Error::Sqlite)?;
@@ -463,11 +493,11 @@ impl Store {
         Ok(rows)
     }
 
-    /// 列出全部会话(按最近消息时间倒序)。
+    /// 列出全部会话(置顶优先,其次按最近消息时间倒序)。
     pub fn list_conversations(&self) -> Result<Vec<ConversationRecord>> {
         let mut statement = self.conn.prepare(
-            "SELECT peer, last_msg_ms, preview, last_read_ms, unread
-             FROM conversations ORDER BY last_msg_ms DESC",
+            "SELECT peer, last_msg_ms, preview, last_read_ms, unread, pinned, muted
+             FROM conversations ORDER BY pinned DESC, last_msg_ms DESC",
         )?;
         let rows = statement
             .query_map([], |row| {
@@ -477,10 +507,43 @@ impl Store {
                     preview: row.get(2)?,
                     last_read_ms: row.get(3)?,
                     unread: row.get::<_, i64>(4)? as u32,
+                    pinned: row.get::<_, i64>(5)? != 0,
+                    muted: row.get::<_, i64>(6)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// 设置会话的置顶/免打扰标记(只改传了值的那一项)。
+    pub fn set_conversation_flags(
+        &self,
+        peer: &str,
+        pinned: Option<bool>,
+        muted: Option<bool>,
+    ) -> Result<()> {
+        if let Some(pinned) = pinned {
+            self.conn.execute(
+                "UPDATE conversations SET pinned = ?2 WHERE peer = ?1",
+                params![peer, i64::from(pinned)],
+            )?;
+        }
+        if let Some(muted) = muted {
+            self.conn.execute(
+                "UPDATE conversations SET muted = ?2 WHERE peer = ?1",
+                params![peer, i64::from(muted)],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 全部会话标为已读(一键全部已读),返回受影响的会话数。
+    pub fn mark_all_conversations_read(&self, read_ms: i64) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE conversations SET unread = 0, last_read_ms = ?1 WHERE unread > 0",
+            params![read_ms],
+        )?;
+        Ok(n)
     }
 
     /// 标记会话已读(清零未读,记录已读时间)。
@@ -521,7 +584,7 @@ impl Store {
     ) -> Result<Vec<StoredMessage>> {
         let mut statement = self.conn.prepare(
             "SELECT id, peer, is_outgoing, from_node, kind, body, format,
-                    ts_ms, created_ms, delivered_ms, read_ms
+                    ts_ms, created_ms, delivered_ms, read_ms, reply_to
              FROM messages
              WHERE peer = ?1 AND ts_ms < ?2
              ORDER BY ts_ms DESC
@@ -541,6 +604,7 @@ impl Store {
                     created_ms: row.get(8)?,
                     delivered_ms: row.get(9)?,
                     read_ms: row.get(10)?,
+                    reply_to: row.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -569,7 +633,7 @@ impl Store {
     pub fn history(&self, peer: &str, limit: u32) -> Result<Vec<StoredMessage>> {
         let mut statement = self.conn.prepare(
             "SELECT id, peer, is_outgoing, from_node, kind, body, format,
-                    ts_ms, created_ms, delivered_ms, read_ms
+                    ts_ms, created_ms, delivered_ms, read_ms, reply_to
              FROM messages
              WHERE peer = ?1
              ORDER BY ts_ms DESC, created_ms DESC
@@ -589,6 +653,7 @@ impl Store {
                     created_ms: row.get(8)?,
                     delivered_ms: row.get(9)?,
                     read_ms: row.get(10)?,
+                    reply_to: row.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -605,7 +670,7 @@ impl Store {
         let pattern = format!("%{escaped}%");
         let mut statement = self.conn.prepare(
             "SELECT id, peer, is_outgoing, from_node, kind, body, format,
-                    ts_ms, created_ms, delivered_ms, read_ms
+                    ts_ms, created_ms, delivered_ms, read_ms, reply_to
              FROM messages
              WHERE body LIKE ?1 ESCAPE '\\'
              ORDER BY ts_ms DESC
@@ -625,6 +690,7 @@ impl Store {
                     created_ms: row.get(8)?,
                     delivered_ms: row.get(9)?,
                     read_ms: row.get(10)?,
+                    reply_to: row.get(11)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -865,6 +931,19 @@ impl Store {
             .map_err(Error::Sqlite)
     }
 
+    /// 自动重试:把原记录换到新令牌并复位为 `active`(同一个文件只保留一行历史)。
+    pub fn retry_transfer(&self, old_token: &str, new_token: &str, started_ms: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE transfers SET token = ?2, status = 'active', detail = NULL,
+                        started_ms = ?3, finished_ms = NULL
+                 WHERE token = ?1",
+                params![old_token, new_token, started_ms],
+            )
+            .map(|_| ())
+            .map_err(Error::Sqlite)
+    }
+
     /// 传输历史(按开始时间倒序)。
     pub fn list_transfers(&self, limit: u32) -> Result<Vec<TransferRecord>> {
         let mut statement = self.conn.prepare(
@@ -939,9 +1018,29 @@ mod tests {
             kind: "text".into(),
             body: Some(body.to_string()),
             format: Some("plain".into()),
+            reply_to: None,
             ts_ms: ts,
             created_ms: ts + 1,
         }
+    }
+
+    #[test]
+    fn reply_to_survives_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut quoted = message("q1", "peer-r", true, 100, "原始消息");
+        quoted.reply_to = Some("orig-1".into());
+        store.insert_message(&quoted).unwrap();
+
+        let rows = store.history("peer-r", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reply_to.as_deref(), Some("orig-1"));
+
+        // 非引用消息保持 None(老库升级后也一样)
+        store
+            .insert_message(&message("q2", "peer-r", true, 200, "普通消息"))
+            .unwrap();
+        let rows = store.history("peer-r", 10).unwrap();
+        assert_eq!(rows[1].reply_to, None);
     }
 
     #[test]
@@ -1252,6 +1351,64 @@ mod tests {
         let conv = &store.list_conversations().unwrap()[0];
         assert_eq!(conv.unread, 0);
         assert_eq!(conv.last_read_ms, 400);
+    }
+
+    #[test]
+    fn conversations_pin_mute_and_mark_all_read() {
+        let store = Store::open_in_memory().unwrap();
+        // 两个会话,各 1 条未读
+        store
+            .insert_message(&message("a1", "peer-a", false, 100, "A 的第一条"))
+            .unwrap();
+        store
+            .insert_message(&message("b1", "peer-b", false, 200, "B 的第一条"))
+            .unwrap();
+
+        // 默认:按最近消息倒序,无置顶/免打扰
+        let convs = store.list_conversations().unwrap();
+        assert_eq!(
+            convs.iter().map(|c| c.peer.as_str()).collect::<Vec<_>>(),
+            vec!["peer-b", "peer-a"]
+        );
+        assert!(!convs[0].pinned && !convs[0].muted);
+
+        // 置顶 peer-a(旧会话)后应排到最前
+        store
+            .set_conversation_flags("peer-a", Some(true), Some(true))
+            .unwrap();
+        let convs = store.list_conversations().unwrap();
+        assert_eq!(convs[0].peer, "peer-a", "置顶会话应排最前");
+        assert!(convs[0].pinned);
+        assert!(convs[0].muted);
+        assert!(!convs[1].pinned, "另一个会话不受影响");
+
+        // 只改一项:免打扰关掉,置顶保持
+        store
+            .set_conversation_flags("peer-a", None, Some(false))
+            .unwrap();
+        let conv = &store.list_conversations().unwrap()[0];
+        assert!(conv.pinned && !conv.muted);
+
+        // 一键全部已读:两个会话都清零
+        let n = store.mark_all_conversations_read(500).unwrap();
+        assert_eq!(n, 2);
+        assert!(
+            store
+                .list_conversations()
+                .unwrap()
+                .iter()
+                .all(|c| c.unread == 0)
+        );
+        // 已读时间也推进了
+        assert!(
+            store
+                .list_conversations()
+                .unwrap()
+                .iter()
+                .all(|c| c.last_read_ms == 500)
+        );
+        // 没有未读时再点,返回 0 而不是报错
+        assert_eq!(store.mark_all_conversations_read(600).unwrap(), 0);
     }
 
     #[test]

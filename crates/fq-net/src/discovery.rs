@@ -14,7 +14,7 @@
 //!   单播投递给其中一个(所以同机测试走 bootstrap 显式互指,不依赖单播随机性)
 //! * `SO_BROADCAST` —— 允许向 255.255.255.255 发送
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use socket2::{Domain, Protocol, Socket, Type};
@@ -81,6 +81,38 @@ pub fn local_ipv4_addresses() -> Vec<std::net::Ipv4Addr> {
         })
         .filter(|ip| !(ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()))
         .collect()
+}
+
+/// 计算"网段直扫"的目标地址:每个本机 IPv4 所在 /24 里的其余主机(`.1`~`.254`),
+/// 端口用对方的发现端口。
+///
+/// 直扫是"搜不到同伴"的自动兜底:广播被交换机/安全软件拦掉时,逐个地址单播
+/// 通告依然能触发对端回发(`announce_to` 是幂等的小包,未运行本程序的主机不会响应)。
+pub fn subnet_scan_targets(local: &[std::net::Ipv4Addr], port: u16) -> Vec<SocketAddr> {
+    use std::collections::BTreeSet;
+
+    // 去重:同一网段的多块网卡只扫一遍,且不扫本机自己的地址
+    let mut subnets: BTreeSet<(u8, u8, u8)> = BTreeSet::new();
+    let mut self_hosts: BTreeSet<(u8, u8, u8, u8)> = BTreeSet::new();
+    for ip in local {
+        let [a, b, c, d] = ip.octets();
+        subnets.insert((a, b, c));
+        self_hosts.insert((a, b, c, d));
+    }
+
+    let mut targets = Vec::new();
+    for (a, b, c) in subnets {
+        for host in 1u8..=254 {
+            if self_hosts.contains(&(a, b, c, host)) {
+                continue;
+            }
+            targets.push(SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, host)),
+                port,
+            ));
+        }
+    }
+    targets
 }
 
 /// 为每块 IPv4 网卡创建一个绑定该网卡本机 IP 的广播发送端。
@@ -225,6 +257,65 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn subnet_scan_targets_cover_slash24_without_self() {
+        let targets = subnet_scan_targets(&[std::net::Ipv4Addr::new(192, 168, 1, 37)], 24250);
+        assert_eq!(targets.len(), 253, "/24 里除自己以外的 253 个地址");
+        assert!(targets.contains(&SocketAddr::from(([192, 168, 1, 1], 24250))));
+        assert!(targets.contains(&SocketAddr::from(([192, 168, 1, 254], 24250))));
+        assert!(
+            !targets
+                .iter()
+                .any(|t| t == &SocketAddr::from(([192, 168, 1, 37], 24250))),
+            "不应扫自己"
+        );
+
+        // 同一网段的两块网卡:去重后只扫其余 252 个地址
+        let targets = subnet_scan_targets(
+            &[
+                std::net::Ipv4Addr::new(192, 168, 1, 37),
+                std::net::Ipv4Addr::new(192, 168, 1, 38),
+            ],
+            24250,
+        );
+        assert_eq!(targets.len(), 252);
+    }
+
+    /// 不靠广播/bootstrap,纯 /24 单播直扫也能触达同网段的对端。
+    #[test]
+    fn subnet_scan_reaches_peer_without_broadcast() {
+        tokio_rt().block_on(async {
+            let peer = DiscoveryEndpoint::bind(
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+                SocketAddr::from(([127, 0, 0, 1], 1)), // 广播目标不可达:本用例只验证直扫
+                vec![],
+            )
+            .unwrap();
+            let peer_port = peer.local_addr().unwrap().port();
+
+            let scanner = DiscoveryEndpoint::bind(
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+                SocketAddr::from(([127, 0, 0, 1], 1)),
+                vec![],
+            )
+            .unwrap();
+
+            // 对回环 /24 直扫:本机算作 127.0.0.2(不是 peer 的地址),
+            // 于是扫描目标里包含 127.0.0.1 —— 正是 peer 所在地址
+            for target in subnet_scan_targets(&[std::net::Ipv4Addr::new(127, 0, 0, 2)], peer_port) {
+                scanner.announce_to(b"scan-probe", target).await;
+            }
+
+            let mut buf = [0u8; 1500];
+            let (size, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(3), peer.recv_from(&mut buf))
+                    .await
+                    .expect("直扫应送达同 /24 的对端")
+                    .unwrap();
+            assert_eq!(&buf[..size], b"scan-probe");
+        });
     }
 
     #[test]

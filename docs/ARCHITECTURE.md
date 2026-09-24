@@ -109,10 +109,11 @@
 
 ```sql
 messages(id PK, peer, is_outgoing, from_node, kind, body, format,
-         ts_ms, created_ms, delivered_ms, read_ms)
+         ts_ms, created_ms, delivered_ms, read_ms, reply_to)
          -- kind: text | image | file;peer 为 NodeId hex 或 group:xxx
-conversations(peer PK, last_msg_ms, preview, last_read_ms, unread)
-         -- 会话列表:活跃排序 + 未读持久化(重启不复活)
+         -- reply_to:引用回复指向的消息 ID(只存 ID,正文各端从本地历史取)
+conversations(peer PK, last_msg_ms, preview, last_read_ms, unread, pinned, muted)
+         -- 会话列表:置顶优先 + 活跃排序 + 未读持久化(重启不复活);muted 只留小点
 peers(node_id PK, display_name, host_name, group_name, first_seen_ms, last_seen_ms)
          -- 联系人列表:由发现驱动(删掉的人再发现就回来,见 §8.4)
 pending_messages(id PK, peer, envelope BLOB, queued_ms)  -- 离线队列(原始报文)
@@ -122,10 +123,11 @@ transfers(token PK, peer, direction, path, size, status, detail,
 peer_avatars(node_id PK, sha256, mime, data BLOB, updated_ms)  -- 对端头像缓存(v6)
 ```
 
-迁移采用 **`PRAGMA user_version` 逐级升级**(v0→v1→…→v7),
+迁移采用 **`PRAGMA user_version` 逐级升级**(v0→v1→…→v9),
 每一步都有回归测试(`v1_database_migrates_to_latest_schema` 等),老数据文件永远可打开。
 `peer_avatars` 只缓存**校验通过**的头像:离线联系人也能显示头像(摘要里带回缓存哈希)。
 **v2 的 `hidden_peers` 已在 v7 删除**:删除联系人不再走"永久隐藏",改为飞秋语义(见 §8.4)。
+v8 给会话加 `pinned` / `muted`(置顶排序、免打扰只留小点),v9 给消息加 `reply_to`(引用回复)。
 
 ---
 
@@ -307,3 +309,13 @@ React 组件(App.tsx)
 | 中继/跨网段 | 中继节点转发(信任模型待设计) | 安全模型扩展 |
 | 音视频 | WebRTC(参考 box-im 的原生实现) | 与 P2P 模型天然契合 |
 | 消息内容加密 | 端到端加密(当前仅传输加密 Noise IK) | 密钥分发设计 |
+
+---
+
+## 11. 0.9.0 新增机制(设计要点)
+
+| 机制 | 关键设计 | 为什么这样做 |
+|---|---|---|
+| **传输失败自动重试** | `fq-core` 事件泵只在**发送方向**且失败原因可重试时(中断/超时/分块或完成通知发不出去)重新发起,上限 `SEND_RETRY_MAX = 2`、间隔 2s;重试沿用同一行传输历史(token 改名),并上报 `TransferRetrying` / `TransferRetryGaveUp` | 瞬断是局域网里最常见的问题。取消、对端拒绝、哈希校验失败**不**重试 —— 重来一遍不会有不同结果,只会打扰对方(系统错误文案里的"积极拒绝"≠对端拒绝,分类器按更具体的短语匹配) |
+| **网段直扫发现** | `fq_net::subnet_scan_targets` 枚举每个本机 IPv4 所在 /24 的其余主机(去重、不扫自己);`App::scan_subnet` 逐地址单播通告(2ms 间隔);启动 3s 后自动扫一次(仅通配绑定),设置页与 CLI `/scan` 可手动触发 | 广播常被交换机/安全软件拦掉,`bootstrap` 又要手填 IP。单播探测是幂等小包,未运行本程序的主机不会响应,代价可以忽略 |
+| **界面主题(跟随系统/浅色/深色)** | 模式存 `profile.json`;生效结果由 JS 写到 `<html data-dark="true|false">`,CSS 中所有暗色规则从 `@media (prefers-color-scheme: dark)` 机械改写为 `[data-dark="true"]` 作用域 | 手选主题必须能与系统不一致,媒体查询表达不了"手动覆盖"。启动早期先读 localStorage 缓存,避免"先白后黑"闪屏 |

@@ -42,6 +42,8 @@ export interface ChatMessage {
   from_node?: string;
   /** 被 @ 的节点(群聊 @提醒;仅内存态,不回读) */
   mentions?: string[];
+  /** 被引用的消息 ID(引用回复;渲染时本地查原文) */
+  reply_to?: string | null;
 }
 
 export interface SendResult {
@@ -53,7 +55,7 @@ export interface SendResult {
 export type FqEvent =
   | { type: "peer_up"; node_id: string; name: string; group: string | null }
   | { type: "peer_down"; node_id: string }
-  | { type: "message"; from: string; from_name: string; id: string; body: string; ts_ms: number; mentions: string[] }
+  | { type: "message"; from: string; from_name: string; id: string; body: string; ts_ms: number; mentions: string[]; reply_to: string | null }
   | { type: "delivered"; id: string }
   | { type: "read"; id: string }
   | { type: "queued_flushed"; to: string; count: number }
@@ -87,7 +89,11 @@ export type FqEvent =
   // 窗口抖动:对端抖了我一下(前端晃动窗口 + 留一条提示)
   | { type: "shaken"; from: string; from_name: string }
   // 对端正在输入(提示类,不落库)
-  | { type: "typing"; from: string; from_name: string; started: boolean };
+  | { type: "typing"; from: string; from_name: string; started: boolean }
+  // 发送中断,后端正在自动重试(第 attempt 次,共 max 次)
+  | { type: "transfer_retrying"; token: string; attempt: number; max: number; name: string }
+  // 自动重试次数用尽,已放弃本次发送
+  | { type: "transfer_retry_gave_up"; token: string; name: string };
 
 export interface SpeedSample {
   t: number;

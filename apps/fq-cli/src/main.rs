@@ -205,7 +205,9 @@ async fn run_chat(args: ChatArgs) -> i32 {
         args.discovery_port,
         args.listen_port
     );
-    println!("[START] 输入 /peers 查看成员,/to <名> 选择会话,直接输入文本发送;/quit 退出");
+    println!(
+        "[START] 输入 /peers 查看成员,/to <名> 选择会话,直接输入文本发送;/scan 直扫本网段;/quit 退出"
+    );
 
     let received: ReceivedLog = Arc::new(Mutex::new(VecDeque::new()));
     let printer = tokio::spawn(event_printer(
@@ -304,6 +306,11 @@ async fn handle_line(
                 }
                 Err(e) => eprintln!("[ERROR] {e}"),
             },
+            "scan" => {
+                // 广播被交换机/安全软件拦掉时的兜底:逐地址单播通告
+                let n = app.scan_subnet().await;
+                println!("[SCAN] 已向本网段 {n} 个地址发出探测通告(等待对端回发…)");
+            }
             "to" => match resolve_peer(app, arg).await {
                 Some((id, name)) => {
                     println!("[OK] 当前会话 → {name} ({id})");
@@ -668,6 +675,14 @@ async fn event_printer(
                     "停止输入"
                 };
                 eprintln!("[TYPING] {from} {state}");
+            }
+            AppEvent::TransferRetrying {
+                attempt, max, name, ..
+            } => {
+                eprintln!("[RETRY] {name} 传输中断,正在自动重试({attempt}/{max})…");
+            }
+            AppEvent::TransferRetryGaveUp { name, .. } => {
+                eprintln!("[RETRY] {name} 自动重试失败,已放弃(可手动重发)");
             }
             AppEvent::UpdateReady {
                 from,

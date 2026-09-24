@@ -15,9 +15,10 @@
   --danger: #e5484d;
   --group-header: #f0f1f6;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #13151c;
+/* ── 暗色主题(由“设置 → 通用 → 主题”控制:跟随系统 / 浅色 / 深色)──
+   JS 把生效结果写到 <html data-dark="true|false">,这里只认属性,
+   不再直接跟随系统媒体查询(手动切换才可能与系统不一致)。 */
+:root[data-dark="true"] { --bg: #13151c;
     --panel: #1c1f29;
     --panel-2: #20242f;
     --rail-bg: #171921;
@@ -26,9 +27,7 @@
     --text-2: #8f95a8;
     --bubble-theirs: #262b38;
     --border: #2a2f3d;
-    --group-header: #1a1d28;
-  }
-}
+    --group-header: #1a1d28; }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -195,6 +194,25 @@ body {
   padding: 0 5px;
   flex-shrink: 0;
 }
+/* 免打扰会话:只留一个小点(不显示未读数) */
+.badge-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-2);
+  flex-shrink: 0;
+}
+.conv-pin { margin-right: 3px; font-size: 11px; }
+.footer-action {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.footer-action:hover { background: var(--panel-2); }
 
 .sidebar-footer {
   padding: 8px 14px;
@@ -212,7 +230,7 @@ body {
 
 /* ── 聊天区 ─────────────────────── */
 .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; background: #F5F5F5; }
-@media (prefers-color-scheme: dark) { .chat { background: #111111; } }
+  [data-dark="true"] .chat { background: #111111; }
 
 .chat-placeholder {
   flex: 1;
@@ -244,9 +262,7 @@ body {
   border-bottom: 1px solid #E0E0E0;
   min-height: 48px;
 }
-@media (prefers-color-scheme: dark) {
-  .chat-header { background: #1A1A1A; border-bottom-color: #2A2A2A; }
-}
+  [data-dark="true"] .chat-header { background: #1A1A1A; border-bottom-color: #2A2A2A; }
 .dot { width: 8px; height: 8px; border-radius: 50%; }
 .dot.on { background: #07C160; }
 .dot.off { background: #999; }
@@ -287,9 +303,7 @@ body {
 }
 .msg-avatar.mine { background: linear-gradient(135deg, #4a7dff, #7a5cff); }
 .msg-avatar.theirs { background: #5B7FFF; }
-@media (prefers-color-scheme: dark) {
-  .msg-avatar.theirs { background: #3A5FBF; }
-}
+  [data-dark="true"] .msg-avatar.theirs { background: #3A5FBF; }
 
 .msg-bubble {
   max-width: 62%;
@@ -313,10 +327,8 @@ body {
   border-top-left-radius: 3px;
   box-shadow: 0 0.5px 1px rgba(0,0,0,0.06);
 }
-@media (prefers-color-scheme: dark) {
-  .msg-row.mine .msg-bubble { background: #2E7D32; color: #E8F5E9; }
-  .msg-row.theirs .msg-bubble { background: #2A2A2A; color: #E0E0E0; }
-}
+  [data-dark="true"] .msg-row.mine .msg-bubble { background: #2E7D32; color: #E8F5E9; }
+  [data-dark="true"] .msg-row.theirs .msg-bubble { background: #2A2A2A; color: #E0E0E0; }
 
 /* 三角尾巴 */
 .msg-row.mine .msg-bubble::before {
@@ -337,12 +349,76 @@ body {
   border-right-color: #FFF;
   border-left: none;
 }
-@media (prefers-color-scheme: dark) {
-  .msg-row.mine .msg-bubble::before { border-left-color: #2E7D32; }
-  .msg-row.theirs .msg-bubble::before { border-right-color: #2A2A2A; }
-}
+  [data-dark="true"] .msg-row.mine .msg-bubble::before { border-left-color: #2E7D32; }
+  [data-dark="true"] .msg-row.theirs .msg-bubble::before { border-right-color: #2A2A2A; }
 
 .msg-body { white-space: pre-wrap; }
+
+/* ── 引用回复:气泡内的引用块 + 输入区的引用条 ── */
+.quote-block {
+  border-left: 3px solid rgba(0, 0, 0, 0.18);
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.quote-block:hover { background: rgba(0, 0, 0, 0.1); }
+.quote-name { font-size: 11.5px; opacity: 0.75; }
+.quote-text {
+  font-size: 12.5px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+@keyframes quote-flash {
+  0%, 100% { background: transparent; }
+  30% { background: rgba(74, 125, 255, 0.14); }
+}
+.msg-row.flash .msg-bubble,
+div[id^="msg-"].flash .msg-bubble {
+  animation: quote-flash 0.4s ease-in-out 3;
+}
+
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel-2);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+.quote-bar-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+.quote-bar-name { color: var(--accent); flex-shrink: 0; }
+.quote-bar-text {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quote-bar-close {
+  border: none;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.quote-bar-close:hover { color: var(--text); }
 .msg-status {
   font-size: 10px;
   color: #7DBE7D;
@@ -363,9 +439,7 @@ body {
   display: flex;
   flex-direction: column;
 }
-@media (prefers-color-scheme: dark) {
-  .composer { background: #1A1A1A; border-top-color: #2A2A2A; }
-}
+  [data-dark="true"] .composer { background: #1A1A1A; border-top-color: #2A2A2A; }
 .composer-toolbar {
   display: flex;
   gap: 4px;
@@ -974,9 +1048,7 @@ body {
   padding: 16px 0;
   flex-shrink: 0;
 }
-@media (prefers-color-scheme: dark) {
-  .wx-settings-side { background: #1A1A1A; border-right-color: #2A2A2A; }
-}
+  [data-dark="true"] .wx-settings-side { background: #1A1A1A; border-right-color: #2A2A2A; }
 .wx-account {
   display: flex;
   align-items: center;
@@ -985,7 +1057,7 @@ body {
   border-bottom: 1px solid #E5E5E5;
   margin-bottom: 8px;
 }
-@media (prefers-color-scheme: dark) { .wx-account { border-bottom-color: #2A2A2A; } }
+  [data-dark="true"] .wx-account { border-bottom-color: #2A2A2A; }
 .wx-account-avatar {
   width: 40px; height: 40px;
   border-radius: 4px;
@@ -1023,10 +1095,8 @@ body {
   background: #E3E3E3;
   font-weight: 600;
 }
-@media (prefers-color-scheme: dark) {
-  .wx-nav-item:hover { background: rgba(255,255,255,0.06); }
-  .wx-nav-item.active { background: #2E2E2E; }
-}
+  [data-dark="true"] .wx-nav-item:hover { background: rgba(255,255,255,0.06); }
+  [data-dark="true"] .wx-nav-item.active { background: #2E2E2E; }
 
 .wx-settings-main {
   flex: 1;
@@ -1044,7 +1114,7 @@ body {
   font-weight: 600;
   border-bottom: 1px solid #EEE;
 }
-@media (prefers-color-scheme: dark) { .wx-main-head { border-bottom-color: #2A2A2A; } }
+  [data-dark="true"] .wx-main-head { border-bottom-color: #2A2A2A; }
 .wx-close {
   border: none;
   background: none;
@@ -1066,7 +1136,7 @@ body {
   min-height: 46px;
   border-bottom: 1px solid #F0F0F0;
 }
-@media (prefers-color-scheme: dark) { .wx-row { border-bottom-color: #262626; } }
+  [data-dark="true"] .wx-row { border-bottom-color: #262626; }
 .wx-row-label {
   width: 104px;
   flex-shrink: 0;
@@ -1120,7 +1190,7 @@ body {
   border-top: 1px solid #F0F0F0;
   margin-top: 8px;
 }
-@media (prefers-color-scheme: dark) { .wx-actions { border-top-color: #262626; } }
+  [data-dark="true"] .wx-actions { border-top-color: #262626; }
 .wx-btn-primary {
   border: none;
   background: #07C160;
@@ -1146,7 +1216,7 @@ body {
   border-bottom: 1px solid #F0F0F0;
   margin-bottom: 4px;
 }
-@media (prefers-color-scheme: dark) { .about-head { border-bottom-color: #262626; } }
+  [data-dark="true"] .about-head { border-bottom-color: #262626; }
 .about-logo {
   width: 52px; height: 52px;
   border-radius: 12px;
@@ -1181,9 +1251,7 @@ body {
   padding: 10px 12px;
   margin: 10px 0;
 }
-@media (prefers-color-scheme: dark) {
-  .about-update { background: #2A2617; border-color: #5A4E1E; color: #E0C97F; }
-}
+  [data-dark="true"] .about-update { background: #2A2617; border-color: #5A4E1E; color: #E0C97F; }
 .about-peers { margin: 10px 0; }
 .about-peers-title {
   font-size: 12px;
@@ -1197,7 +1265,7 @@ body {
   font-size: 12.5px;
   border-bottom: 1px dashed #EEE;
 }
-@media (prefers-color-scheme: dark) { .about-peer-row { border-bottom-color: #262626; } }
+  [data-dark="true"] .about-peer-row { border-bottom-color: #262626; }
 .about-peer-ver { font-family: Consolas, monospace; color: #999; }
 .about-peer-ver.newer { color: #07C160; font-weight: 700; }
 .about-peer-ver.older { color: #C9A227; }
@@ -1847,7 +1915,7 @@ body {
   padding: 12px 16px;
   border-bottom: 1px solid #F0F0F0;
 }
-@media (prefers-color-scheme: dark) { .wx-block { border-bottom-color: #262626; } }
+  [data-dark="true"] .wx-block { border-bottom-color: #262626; }
 .set-label { display: flex; flex-direction: column; gap: 3px; }
 .set-label > span:first-child { font-size: 13.5px; color: var(--text); }
 .set-note { font-size: 11.5px; color: var(--text-2); line-height: 1.6; }

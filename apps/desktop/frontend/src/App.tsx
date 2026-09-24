@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import { avatarColor, fmtBytes, initials, transferSpeed } from "./types";
 import EMOJI_GROUPS from "./emoji";
+import { applyTheme, watchSystemTheme, type ThemeMode } from "./theme";
 
 function formatTime(tsMs: number): string {
   const d = new Date(tsMs);
@@ -290,8 +291,25 @@ export default function App() {
   );
   /** 消息右键菜单。 */
   const [msgMenu, setMsgMenu] = useState<{ x: number; y: number; msg: ChatMessage } | null>(null);
+  /** 会话右键菜单(置顶/免打扰/标为已读)。 */
+  const [convMenu, setConvMenu] = useState<{
+    x: number;
+    y: number;
+    peer: string;
+    label: string;
+    pinned: boolean;
+    muted: boolean;
+  } | null>(null);
+  /** 免打扰会话集合(ref:事件回调在挂载时捕获,读 state 会过期)。 */
+  const mutedPeersRef = useRef<Set<string>>(new Set());
+  /** 正在扫网段(按钮防抖)。 */
+  const [scanning, setScanning] = useState(false);
+  /** 当前主题模式(供"跟随系统"监听使用;展示用 prefs.theme)。 */
+  const themeModeRef = useRef<ThemeMode>("system");
   /** 待转发的消息(弹出目标选择)。 */
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  /** 正在引用的消息(输入区上方显示引用条)。 */
+  const [quoting, setQuoting] = useState<ChatMessage | null>(null);
   /** 收到抖动时给窗口加抖动动画 + 抖动节流(同会话 1.5s 一次,防"抖动炸弹")。 */
   const [shaking, setShaking] = useState(false);
   const shakeCooldownRef = useRef<Record<string, number>>({});
@@ -405,6 +423,13 @@ export default function App() {
       .catch((e) => console.error("拉取会话失败", e));
   }, []);
 
+  // 免打扰名单给事件回调用(回调在挂载时捕获,不能读最新 state)
+  useEffect(() => {
+    mutedPeersRef.current = new Set(
+      conversations.filter((c) => c.muted).map((c) => c.peer),
+    );
+  }, [conversations]);
+
   const refreshTransferHistory = useCallback(() => {
     api
       .listTransferHistory()
@@ -475,9 +500,35 @@ export default function App() {
       .then((p) => {
         setPrefs(p);
         setAutoUpdate(p.auto_update);
+        // 主题以后端 profile.json 为准(启动时先用本机缓存挡闪屏)
+        const mode: ThemeMode =
+          p.theme === "light" || p.theme === "dark" ? p.theme : "system";
+        themeModeRef.current = mode;
+        applyTheme(mode);
       })
       .catch((e) => console.error("读取偏好设置失败", e));
   }, []);
+
+  // 跟随系统:系统深浅色变化时重新计算生效主题
+  useEffect(
+    () => watchSystemTheme(() => applyTheme(themeModeRef.current)),
+    [],
+  );
+
+  /** 设置界面主题(system / light / dark)。 */
+  const doSetTheme = useCallback(
+    async (mode: ThemeMode) => {
+      applyTheme(mode); // 立即生效,不等后端往返
+      themeModeRef.current = mode;
+      try {
+        await api.setTheme(mode);
+        await refreshPreferences();
+      } catch (e) {
+        pushToast("error", `主题设置失败:${String(e)}`);
+      }
+    },
+    [pushToast, refreshPreferences],
+  );
 
   /** 切换在线状态(立即广播)。 */
   const doSetStatus = useCallback(
@@ -599,6 +650,52 @@ export default function App() {
     [pushToast],
   );
 
+  /** 设置会话置顶/免打扰(右键菜单)。 */
+  const doSetConvFlags = useCallback(
+    async (peer: string, label: string, flags: { pinned?: boolean; muted?: boolean }) => {
+      try {
+        await api.setConversationFlags(peer, flags);
+        await refreshConversations();
+        if (flags.pinned !== undefined) {
+          pushToast("info", flags.pinned ? `已置顶「${label}」` : `已取消置顶「${label}」`);
+        }
+        if (flags.muted !== undefined) {
+          pushToast(
+            "info",
+            flags.muted ? `已对「${label}」开启免打扰` : `已关闭「${label}」的免打扰`,
+          );
+        }
+      } catch (e) {
+        pushToast("error", `设置失败:${String(e)}`);
+      }
+    },
+    [pushToast, refreshConversations],
+  );
+
+  /** 扫一遍本网段(广播被拦时的发现兜底)。 */
+  const doScanSubnet = useCallback(async () => {
+    setScanning(true);
+    try {
+      const n = await api.scanSubnet();
+      pushToast("info", `已向本网段 ${n} 个地址发出探测,稍等片刻看联系人列表`);
+    } catch (e) {
+      pushToast("error", `扫描失败:${String(e)}`);
+    } finally {
+      setScanning(false);
+    }
+  }, [pushToast]);
+
+  /** 一键全部已读。 */
+  const doMarkAllRead = useCallback(async () => {    try {
+      const n = await api.markAllConversationsRead();
+      setUnread({});
+      await refreshConversations();
+      pushToast("info", n > 0 ? `已把 ${n} 个会话标为已读` : "没有未读会话");
+    } catch (e) {
+      pushToast("error", `操作失败:${String(e)}`);
+    }
+  }, [pushToast, refreshConversations]);
+
   /** 更换头像:选择图片 → 后端压缩成 256×256 → 广播。 */
   const doChooseAvatar = useCallback(async () => {
     try {
@@ -624,6 +721,7 @@ export default function App() {
 
   const openPeer = useCallback((nodeId: string) => {
     setSelected(nodeId);
+    setQuoting(null);
     setUnread((u) => ({ ...u, [nodeId]: 0 }));
     api
       .history(nodeId)
@@ -1124,6 +1222,7 @@ export default function App() {
           delivered: false,
           read: false,
           mentions,
+          reply_to: event.reply_to ?? null,
         };
         setMessages((m) => ({
           ...m,
@@ -1139,7 +1238,7 @@ export default function App() {
           delete next[event.from];
           return next;
         });
-        if (mentionedMe) {
+        if (mentionedMe && !mutedPeersRef.current.has(event.from)) {
           pushToast("info", `${event.from_name} 在群里 @ 了你`);
         }
         refreshConversations();
@@ -1237,6 +1336,22 @@ export default function App() {
         setOffers((list) => list.filter((o) => o.token !== event.token));
         finishTransfer(event.token, event.reason);
         pushToast("error", `文件传输失败:${event.reason}`);
+        break;
+      case "transfer_retrying":
+        // 自动重试:撤掉旧的失败行(新会话的进度会另起一行),提示重试进度
+        setTransfers((t) => {
+          if (!t[event.token]) return t;
+          const next = { ...t };
+          delete next[event.token];
+          return next;
+        });
+        pushToast(
+          "info",
+          `${event.name} 传输中断,正在自动重试(${event.attempt}/${event.max})…`,
+        );
+        break;
+      case "transfer_retry_gave_up":
+        pushToast("error", `${event.name} 自动重试失败,已放弃(可重新发送)`);
         break;
       case "update_incoming": {
         // 更新包自动接收:面板里显示进度(无需用户点"接收")
@@ -1372,9 +1487,10 @@ export default function App() {
       return name ? body.includes(`@${name}`) : false;
     });
     setMentionIds([]);
+    const replyTo = quoting?.id ?? null;
     try {
       if (isGroup) {
-        const [sent, queued] = await api.sendGroupText(selected, body, mentions);
+        const [sent, queued] = await api.sendGroupText(selected, body, mentions, replyTo);
         const msg: ChatMessage = {
           id: `grp-${Date.now()}`,
           outgoing: true,
@@ -1384,13 +1500,14 @@ export default function App() {
           delivered: false,
           read: false,
           mentions,
+          reply_to: replyTo,
         };
         setMessages((m) => ({ ...m, [selected]: [...(m[selected] ?? []), msg] }));
         if (queued > 0) {
           pushToast("info", `已送达 ${sent} 人,${queued} 人离线(消息已入队,上线后自动补发)`);
         }
       } else {
-        const result = await api.sendText(selected, body);
+        const result = await api.sendText(selected, body, [], replyTo);
         const msg: ChatMessage = {
           id: result.id,
           outgoing: true,
@@ -1399,12 +1516,14 @@ export default function App() {
           ts_ms: Date.now(),
           delivered: false,
           read: false,
+          reply_to: replyTo,
         };
         setMessages((m) => ({ ...m, [selected]: [...(m[selected] ?? []), msg] }));
         if (result.queued) {
           pushToast("info", "对方当前不在线,消息已入队,对方上线后自动送达");
         }
       }
+      setQuoting(null);
     } catch (e) {
       console.error("发送失败", e);
       pushToast("error", `消息发送失败:${String(e)}`);
@@ -1558,6 +1677,26 @@ export default function App() {
     };
   }, [selected, groups, selectedPeer]);
   const currentMessages = selected ? messages[selected] ?? [] : [];
+
+  /** 消息发送者展示名(群聊里用于引用条与"谁引用了谁")。 */
+  const nameOfMsg = (msg: ChatMessage): string =>
+    msg.outgoing
+      ? self?.name ?? "我"
+      : peers.find((p) => p.node_id === msg.from_node)?.name ?? "对方";
+
+  /** 引用条里引用内容的摘要(图片/文件/抖动没有正文,给出占位)。 */
+  const quotePreview = (msg: ChatMessage): string => {
+    if (msg.kind === "image") return "[图片]";
+    if (msg.kind === "file") {
+      try {
+        return `[文件] ${JSON.parse(msg.body ?? "{}").n ?? ""}`.trim();
+      } catch {
+        return "[文件]";
+      }
+    }
+    if (msg.kind === "shake") return "[窗口抖动]";
+    return msg.body ?? "";
+  };
   const transferList = useMemo(
     () => Object.values(transfers).sort((a, b) => a.token.localeCompare(b.token)),
     [transfers],
@@ -1729,6 +1868,17 @@ export default function App() {
                         key={conv.peer}
                         className={`peer-item ${selected === conv.peer ? "active" : ""}`}
                         onClick={() => openPeer(conv.peer)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setConvMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            peer: conv.peer,
+                            label,
+                            pinned: conv.pinned,
+                            muted: conv.muted,
+                          });
+                        }}
                       >
                         <AvatarBubble
                           url={isGroupConv ? undefined : avatars[conv.peer]}
@@ -1737,12 +1887,20 @@ export default function App() {
                           className={isGroupConv ? "group-avatar" : online ? "" : "offline"}
                         />
                         <div className="peer-meta">
-                          <div className="peer-name">{label}</div>
+                          <div className="peer-name">
+                            {conv.pinned && <span className="conv-pin" title="已置顶">📌</span>}
+                            {label}
+                          </div>
                           <div className="conv-preview">{conv.preview}</div>
                         </div>
                         <div className="conv-side">
                           <div className="conv-time">{formatDivider(conv.last_msg_ms)}</div>
-                          {conv.unread > 0 && <span className="badge">{conv.unread}</span>}
+                          {conv.unread > 0 &&
+                            (conv.muted ? (
+                              <span className="badge-dot" title="免打扰:有新消息" />
+                            ) : (
+                              <span className="badge">{conv.unread}</span>
+                            ))}
                         </div>
                         <button
                           className="conv-remove"
@@ -1823,6 +1981,15 @@ export default function App() {
         <div className="sidebar-footer">
           <span className="status-dot on" /> {onlineCount} 在线
           {offlineCount > 0 && <span className="offline-count"> · {offlineCount} 离线</span>}
+          {conversations.some((c) => c.unread > 0) && (
+            <button
+              className="footer-action"
+              title="把所有会话的未读清零"
+              onClick={() => void doMarkAllRead()}
+            >
+              全部已读
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1967,7 +2134,7 @@ export default function App() {
                 }
 
                 return (
-                  <div key={m.id}>
+                  <div key={m.id} id={`msg-${m.id}`}>
                     {showDivider && (
                       <div className="time-divider">{formatDivider(m.ts_ms)}</div>
                     )}
@@ -2032,6 +2199,41 @@ export default function App() {
                             )
                           ) : (
                             <div className="msg-bubble" title={formatTime(m.ts_ms)}>
+                              {m.reply_to &&
+                                (() => {
+                                  const quoted = currentMessages.find(
+                                    (x) => x.id === m.reply_to,
+                                  );
+                                  return (
+                                    <div
+                                      className="quote-block"
+                                      title={quoted ? "点击定位原消息" : "原消息不在本地"}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!quoted) return;
+                                        const el = document.getElementById(
+                                          `msg-${quoted.id}`,
+                                        );
+                                        el?.scrollIntoView({
+                                          behavior: "smooth",
+                                          block: "center",
+                                        });
+                                        el?.classList.add("flash");
+                                        window.setTimeout(
+                                          () => el?.classList.remove("flash"),
+                                          1200,
+                                        );
+                                      }}
+                                    >
+                                      <div className="quote-name">
+                                        {quoted ? nameOfMsg(quoted) : "原消息"}
+                                      </div>
+                                      <div className="quote-text">
+                                        {quoted ? quotePreview(quoted) : "原消息不在本地"}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
                               <div className="msg-body">{m.body ?? `<${m.kind}>`}</div>
                               {isMine && (
                                 <span
@@ -2159,6 +2361,22 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {quoting && (
+                <div className="quote-bar">
+                  <div className="quote-bar-body">
+                    <span className="quote-bar-name">{nameOfMsg(quoting)}</span>
+                    <span className="quote-bar-text">{quotePreview(quoting)}</span>
+                  </div>
+                  <button
+                    className="quote-bar-close"
+                    title="取消引用"
+                    onClick={() => setQuoting(null)}
+                  >
+                    ×
+                  </button>
                 </div>
               )}
 
@@ -2497,6 +2715,64 @@ export default function App() {
           );
         })()}
 
+      {/* ── 会话右键菜单(置顶 / 免打扰 / 标为已读)── */}
+      {convMenu && (
+        <>
+          <div
+            className="context-mask"
+            onClick={() => setConvMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setConvMenu(null);
+            }}
+          />
+          <div className="context-menu" style={{ left: convMenu.x, top: convMenu.y }}>
+            <div
+              className="context-item"
+              onClick={() => {
+                void doSetConvFlags(convMenu.peer, convMenu.label, { pinned: !convMenu.pinned });
+                setConvMenu(null);
+              }}
+            >
+              {convMenu.pinned ? "📍 取消置顶" : "📌 置顶会话"}
+            </div>
+            <div
+              className="context-item"
+              onClick={() => {
+                void doSetConvFlags(convMenu.peer, convMenu.label, { muted: !convMenu.muted });
+                setConvMenu(null);
+              }}
+            >
+              {convMenu.muted ? "🔔 关闭免打扰" : "🔕 消息免打扰"}
+            </div>
+            <div
+              className="context-item"
+              onClick={() => {
+                void api
+                  .markConversationRead(convMenu.peer)
+                  .then(() => {
+                    setUnread((u) => ({ ...u, [convMenu.peer]: 0 }));
+                    refreshConversations();
+                  })
+                  .catch(() => undefined);
+                setConvMenu(null);
+              }}
+            >
+              ✓ 标为已读
+            </div>
+            <div
+              className="context-item danger"
+              onClick={() => {
+                void doDeleteConversation(convMenu.peer, convMenu.label, 0);
+                setConvMenu(null);
+              }}
+            >
+              🗑 从最近会话移除
+            </div>
+          </div>
+        </>
+      )}
+
       {/* ── 消息右键菜单 ── */}
       {msgMenu && (
         <>
@@ -2509,6 +2785,15 @@ export default function App() {
             }}
           />
           <div className="context-menu" style={{ left: msgMenu.x, top: msgMenu.y }}>
+            <div
+              className="context-item"
+              onClick={() => {
+                setQuoting(msgMenu.msg);
+                setMsgMenu(null);
+              }}
+            >
+              💬 引用回复
+            </div>
             {msgMenu.msg.kind === "text" && (
               <div
                 className="context-item"
@@ -2830,6 +3115,30 @@ export default function App() {
                 <div className="wx-rows">
                   <div className="wx-block">
                     <div className="set-label">
+                      <span>主题</span>
+                      <span className="set-note">跟随系统,或手动指定浅色 / 深色</span>
+                    </div>
+                    <div className="wx-pills">
+                      {(
+                        [
+                          ["system", "跟随系统"],
+                          ["light", "浅色"],
+                          ["dark", "深色"],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          className={`wx-pill ${(prefs?.theme ?? "system") === value ? "active" : ""}`}
+                          onClick={() => void doSetTheme(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="wx-block">
+                    <div className="set-label">
                       <span>在线状态</span>
                       <span className="set-note">对方的联系人列表里会显示这个状态(切立即广播)</span>
                     </div>
@@ -2850,6 +3159,24 @@ export default function App() {
                           {label}
                         </button>
                       ))}
+                    </div>
+                  </div>
+
+                  <div className="wx-block">
+                    <div className="set-label">
+                      <span>发现同伴</span>
+                      <span className="set-note">
+                        广播被交换机/安全软件拦截时,可扫一遍本网段逐个探测(已按 /24 自动执行)
+                      </span>
+                    </div>
+                    <div className="wx-pills">
+                      <button
+                        className="wx-pill"
+                        disabled={scanning}
+                        onClick={() => void doScanSubnet()}
+                      >
+                        {scanning ? "扫描中…" : "扫描本网段"}
+                      </button>
                     </div>
                   </div>
 

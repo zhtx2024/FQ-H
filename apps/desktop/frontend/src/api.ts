@@ -10,8 +10,18 @@ export const getSelfInfo = () => invoke<SelfInfo>("get_self_info");
 
 export const listPeers = () => invoke<Peer[]>("list_peers");
 
-export const sendText = (nodeId: string, body: string, mentions?: string[]) =>
-  invoke<SendResult>("send_text", { nodeId, body, mentions: mentions ?? null });
+export const sendText = (
+  nodeId: string,
+  body: string,
+  mentions?: string[],
+  replyTo?: string | null,
+) =>
+  invoke<SendResult>("send_text", {
+    nodeId,
+    body,
+    mentions: mentions ?? null,
+    replyTo: replyTo ?? null,
+  });
 
 /** 发送"正在输入"状态(提示类,单聊用)。 */
 export const sendTyping = (nodeId: string, started: boolean) =>
@@ -118,14 +128,28 @@ export const createGroup = (name: string, members: string[]) =>
 export const deleteGroup = (groupId: string) =>
   invoke<boolean>("delete_group", { groupId });
 
-export const sendGroupText = (groupId: string, body: string, mentions?: string[]) =>
-  invoke<[number, number]>("send_group_text", { groupId, body, mentions: mentions ?? null });
+export const sendGroupText = (
+  groupId: string,
+  body: string,
+  mentions?: string[],
+  replyTo?: string | null,
+) =>
+  invoke<[number, number]>("send_group_text", {
+    groupId,
+    body,
+    mentions: mentions ?? null,
+    replyTo: replyTo ?? null,
+  });
 
 export interface ConversationInfo {
   peer: string;
   last_msg_ms: number;
   preview: string;
   unread: number;
+  /** 是否置顶(置顶排最前) */
+  pinned: boolean;
+  /** 是否免打扰(未读只显示小点,不弹提示) */
+  muted: boolean;
 }
 
 export const listConversations = () =>
@@ -133,6 +157,19 @@ export const listConversations = () =>
 
 export const markConversationRead = (peer: string) =>
   invoke<void>("mark_conversation_read", { peer });
+
+/** 扫一遍本网段(广播不可达时的发现兜底),返回探测地址数。 */
+export const scanSubnet = () => invoke<number>("scan_subnet");
+
+/** 设置会话置顶/免打扰(只传要改的那一项)。 */
+export const setConversationFlags = (
+  peer: string,
+  flags: { pinned?: boolean; muted?: boolean },
+) => invoke<void>("set_conversation_flags", { peer, ...flags });
+
+/** 一键全部已读,返回受影响的会话数。 */
+export const markAllConversationsRead = () =>
+  invoke<number>("mark_all_conversations_read");
 
 export const historyBefore = (peer: string, beforeMs: number, limit = 50) =>
   invoke<import("./types").ChatMessage[]>("history_before", { peer, beforeMs, limit });
@@ -194,12 +231,17 @@ export interface Preferences {
   log_dir: string;
   /** 当前 TCP 监听端口 */
   listen_port: number;
+  /** 界面主题:system / light / dark */
+  theme: string;
 }
 
 export const getPreferences = () => invoke<Preferences>("get_preferences");
 
 export const setAutoUpdate = (enabled: boolean) =>
   invoke<void>("set_auto_update", { enabled });
+
+/** 设置界面主题(system / light / dark)。 */
+export const setTheme = (theme: string) => invoke<void>("set_theme", { theme });
 
 /** 设置在线状态(online / away / busy / dnd)并立即广播。 */
 export const setStatus = (status: string) => invoke<void>("set_status", { status });

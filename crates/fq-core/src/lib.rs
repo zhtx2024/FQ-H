@@ -101,6 +101,24 @@ pub enum AppEvent {
         /// true = 开始输入,false = 停止。
         started: bool,
     },
+    /// 发送中断,正在自动重试(UI 可在传输面板/提示里显示"重试中 N/M")。
+    TransferRetrying {
+        /// 原传输令牌。
+        token: String,
+        /// 第几次重试(从 1 起)。
+        attempt: u8,
+        /// 最多重试次数。
+        max: u8,
+        /// 文件名(展示用)。
+        name: String,
+    },
+    /// 自动重试次数用尽,彻底放弃(UI 提示"已放弃")。
+    TransferRetryGaveUp {
+        /// 原传输令牌。
+        token: String,
+        /// 文件名(展示用)。
+        name: String,
+    },
 }
 
 /// 发送结果。
@@ -208,6 +226,39 @@ impl AppConfig {
     }
 }
 
+/// 发送失败自动重试:最多重试次数(总尝试 = 1 + 该值)。
+pub const SEND_RETRY_MAX: u8 = 2;
+/// 每次自动重试前的等待(给链路/对端一点恢复时间)。
+pub const SEND_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// 某次发送失败是否值得自动重试。
+///
+/// 只有"链路抖动类"原因才重试(传输中断/超时、分块或完成通知发不出去);
+/// 用户取消、对端拒绝/中止、哈希校验失败都说明重来一遍没有意义,只会打扰双方。
+///
+/// 注意关键字要**足够具体**:系统错误文案里 "由于目标计算机积极拒绝,无法连接"
+/// 也含"拒绝"二字,但它恰恰是典型的瞬断,必须可重试。
+pub fn is_retryable_send_failure(reason: &str) -> bool {
+    let transient = ["中断", "超时", "发送分块失败", "发送完成通知失败"];
+    let fatal = ["已取消", "对方中止", "已拒绝", "校验失败", "读取失败"];
+    transient.iter().any(|k| reason.contains(k)) && !fatal.iter().any(|k| reason.contains(k))
+}
+
+/// 发送中的文件(仅发送方向):失败自动重试需要源路径与已用次数。
+#[derive(Debug, Clone)]
+struct OutgoingSend {
+    /// 目标对端。
+    to: NodeId,
+    /// 本地源文件路径。
+    source: PathBuf,
+    /// 随文件附带的留言。
+    message: Option<String>,
+    /// 文件名(重试事件展示用)。
+    name: String,
+    /// 已经重试过几次。
+    retries: u8,
+}
+
 /// 运行中的应用。
 #[derive(Debug)]
 pub struct App {
@@ -221,6 +272,12 @@ pub struct App {
     update_package: Option<PathBuf>,
     /// 本机头像文件路径(`<数据目录>/avatar.png`)。
     avatar_path: PathBuf,
+    /// 发送中的文件:失败自动重试需要源路径与剩余次数。
+    outgoing: Arc<Mutex<HashMap<String, OutgoingSend>>>,
+    /// 本机可用于直扫的 IPv4(通配绑定时取全部网卡地址)。
+    scan_ips: Vec<Ipv4Addr>,
+    /// 发现端口(直扫目标用同一端口)。
+    discovery_port: u16,
 }
 
 impl App {
@@ -276,6 +333,21 @@ impl App {
             .update_package
             .clone()
             .or_else(|| std::env::current_exe().ok());
+        // 发送登记表:失败自动重试要按 token 找回源路径
+        let outgoing: Arc<Mutex<HashMap<String, OutgoingSend>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        // 直扫目标:通配绑定(真实局域网)取全部网卡地址;绑定了具体地址就只扫它
+        let scan_ips: Vec<Ipv4Addr> = if config.bind.is_unspecified() {
+            fq_net::local_ipv4_addresses()
+        } else {
+            match config.bind {
+                IpAddr::V4(ip) => vec![ip],
+                IpAddr::V6(_) => Vec::new(),
+            }
+        };
+        let discovery_port = config.discovery_port;
+        // 通配绑定 = 真实局域网场景(回环绑定/测试不自动直扫,避免无谓的网段流量)
+        let auto_scan = config.bind.is_unspecified() && !scan_ips.is_empty();
         let pump = tokio::spawn(event_pump(
             handle.clone(),
             Arc::clone(&store),
@@ -283,9 +355,10 @@ impl App {
             tofu_path,
             update_package,
             Some(avatar_path.clone()),
+            Arc::clone(&outgoing),
         ));
 
-        Ok(Self {
+        let app = Self {
             handle,
             node: Some(node),
             store,
@@ -294,7 +367,30 @@ impl App {
             data_dir: config.data_dir,
             update_package: config.update_package,
             avatar_path,
-        })
+            outgoing,
+            scan_ips,
+            discovery_port,
+        };
+        // 开箱即用:启动 3 秒后错峰直扫一遍本网段(广播被拦时"搜不到同伴"的兜底)
+        if auto_scan {
+            let handle = app.handle.clone();
+            let ips = app.scan_ips.clone();
+            let port = app.discovery_port;
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let count = scan_subnet_with(&handle, &ips, port).await;
+                tracing::info!(target = "fq_core", count, "启动网段直扫完成");
+            });
+        }
+        Ok(app)
+    }
+
+    /// 扫描本网段:对每个本地 IPv4 所在 /24 逐地址单播通告。
+    ///
+    /// 这是"搜不到同伴"的自动兜底(广播被交换机/安全软件拦掉时仍能互相发现);
+    /// 返回本次探测的地址数。
+    pub async fn scan_subnet(&self) -> usize {
+        scan_subnet_with(&self.handle, &self.scan_ips, self.discovery_port).await
     }
 
     /// 本端 NodeId(跨重启稳定)。
@@ -324,15 +420,19 @@ impl App {
 
     /// 发送文本:对端可达即发,不可达则入队待补发。
     pub async fn send_text(&self, to: NodeId, body: &str) -> Result<SendOutcome> {
-        self.send_text_mentions(to, body, Vec::new()).await
+        self.send_text_mentions(to, body, Vec::new(), None).await
     }
 
-    /// 发送文本(可带 @ 提醒;`mentions` 为被 @ 的节点)。
+    /// 发送文本(可带 @ 提醒与引用回复)。
+    ///
+    /// `mentions` 为被 @ 的节点;`reply_to` 为被引用的消息 ID(引用只带 ID,
+    /// 原文各端从自己的历史里取 —— 局域网 P2P 下不复制正文,避免协议膨胀)。
     pub async fn send_text_mentions(
         &self,
         to: NodeId,
         body: &str,
         mentions: Vec<NodeId>,
+        reply_to: Option<MsgId>,
     ) -> Result<SendOutcome> {
         let envelope = Envelope::direct(
             self.node_id(),
@@ -340,7 +440,7 @@ impl App {
             Kind::Text(TextBody {
                 body: body.to_string(),
                 format: TextFormat::Plain,
-                reply_to: None,
+                reply_to,
                 mentions,
                 group_id: None,
                 group_name: None,
@@ -699,7 +799,7 @@ impl App {
 
         let token = self
             .handle
-            .send_file(to, path.clone(), message)
+            .send_file(to, path.clone(), message.clone())
             .await
             .map_err(Error::Net)?;
 
@@ -711,6 +811,17 @@ impl App {
             &file_name,
             file_size,
             now_ms(),
+        );
+        // 记下源路径与重试次数:发送中断时事件泵会据此自动重试
+        self.outgoing.lock().await.insert(
+            token.clone(),
+            OutgoingSend {
+                to,
+                source: path.clone(),
+                message,
+                name: file_name.clone(),
+                retries: 0,
+            },
         );
 
         // 插入聊天历史(文件条目)
@@ -729,6 +840,7 @@ impl App {
             kind: if is_image { "image" } else { "file" }.into(),
             body: Some(body.to_string()),
             format: None,
+            reply_to: None,
             ts_ms: fq_proto::now_ms(),
             created_ms: fq_proto::now_ms(),
         };
@@ -806,16 +918,17 @@ impl App {
     ///
     /// 返回 `(成功直发数, 入队数)`。
     pub async fn send_group_text(&self, group_id: &str, body: &str) -> Result<(usize, usize)> {
-        self.send_group_text_mentions(group_id, body, Vec::new())
+        self.send_group_text_mentions(group_id, body, Vec::new(), None)
             .await
     }
 
-    /// 发送群消息(可带 @ 提醒)。
+    /// 发送群消息(可带 @ 提醒与引用回复)。
     pub async fn send_group_text_mentions(
         &self,
         group_id: &str,
         body: &str,
         mentions: Vec<NodeId>,
+        reply_to: Option<MsgId>,
     ) -> Result<(usize, usize)> {
         let group = self
             .store
@@ -837,7 +950,7 @@ impl App {
                 Kind::Text(TextBody {
                     body: body.to_string(),
                     format: TextFormat::Plain,
-                    reply_to: None,
+                    reply_to,
                     mentions: mentions.clone(),
                     group_id: Some(group.id.clone()),
                     group_name: Some(group.name.clone()),
@@ -869,6 +982,7 @@ impl App {
             kind: "text".into(),
             body: Some(body.to_string()),
             format: Some("plain".into()),
+            reply_to: reply_to.map(|id| id.to_string()),
             ts_ms: now_ms(),
             created_ms: now_ms(),
         };
@@ -929,6 +1043,17 @@ impl App {
                         size,
                         now_ms(),
                     );
+                    // 群发:每个成员各自登记,失败可独立自动重试
+                    self.outgoing.lock().await.insert(
+                        token.clone(),
+                        OutgoingSend {
+                            to: member,
+                            source: path.clone(),
+                            message: message.clone(),
+                            name: file_name.clone(),
+                            retries: 0,
+                        },
+                    );
                     tokens.push(token);
                 }
                 Err(e) => last_error = Some(Error::Net(e)),
@@ -956,6 +1081,7 @@ impl App {
             kind: if is_img { "image" } else { "file" }.into(),
             body: Some(body.to_string()),
             format: None,
+            reply_to: None,
             ts_ms: now_ms(),
             created_ms: now_ms(),
         };
@@ -1086,6 +1212,29 @@ impl App {
             .map_err(Error::Store)
     }
 
+    /// 设置会话置顶 / 免打扰(只改传了值的那一项)。
+    pub async fn set_conversation_flags(
+        &self,
+        peer: &str,
+        pinned: Option<bool>,
+        muted: Option<bool>,
+    ) -> Result<()> {
+        self.store
+            .lock()
+            .await
+            .set_conversation_flags(peer, pinned, muted)
+            .map_err(Error::Store)
+    }
+
+    /// 一键全部已读:清零所有会话未读,返回受影响的会话数。
+    pub async fn mark_all_conversations_read(&self) -> Result<usize> {
+        self.store
+            .lock()
+            .await
+            .mark_all_conversations_read(now_ms())
+            .map_err(Error::Store)
+    }
+
     /// 全文搜索历史消息(跨会话,时间倒序)。
     pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<StoredMessage>> {
         self.store
@@ -1207,6 +1356,7 @@ impl App {
             kind: if is_img { "image" } else { "file" }.into(),
             body: Some(body.to_string()),
             format: None,
+            reply_to: None,
             ts_ms: fq_proto::now_ms(),
             created_ms: fq_proto::now_ms(),
         };
@@ -1284,6 +1434,7 @@ async fn event_pump(
     tofu_path: PathBuf,
     update_package: Option<PathBuf>,
     avatar_path: Option<PathBuf>,
+    outgoing: Arc<Mutex<HashMap<String, OutgoingSend>>>,
 ) {
     let mut rx = handle.events();
     let mut retry_ticker = tokio::time::interval(Duration::from_secs(1));
@@ -1353,6 +1504,7 @@ async fn event_pump(
                             kind: "text".into(),
                             body: Some(body.body.clone()),
                             format: Some(body.format.as_str().to_string()),
+                            reply_to: body.reply_to.map(|id| id.to_string()),
                             ts_ms: envelope.ts_ms,
                             created_ms: now_ms(),
                         };
@@ -1562,6 +1714,7 @@ async fn event_pump(
                             kind: "shake".into(),
                             body: None,
                             format: None,
+                            reply_to: None,
                             ts_ms: envelope.ts_ms,
                             created_ms: now_ms(),
                         };
@@ -1653,6 +1806,7 @@ async fn event_pump(
                     .lock()
                     .await
                     .record_transfer_finish(token, "done", None, now_ms());
+                outgoing.lock().await.remove(token);
             }
             NodeEvent::UpdatePackageReady {
                 from,
@@ -1668,7 +1822,12 @@ async fn event_pump(
                     path: path.clone(),
                 });
             }
-            NodeEvent::FileTransferFailed { token, reason, .. } => {
+            NodeEvent::FileTransferFailed {
+                token,
+                reason,
+                direction,
+                ..
+            } => {
                 let status = if reason.contains("取消") {
                     "cancelled"
                 } else {
@@ -1680,6 +1839,21 @@ async fn event_pump(
                     Some(reason),
                     now_ms(),
                 );
+                // 发送方向瞬断(超时/分块失败)→ 自动重试,省掉"手动再发一次"
+                if *direction == fq_net::TransferDirection::Sending
+                    && is_retryable_send_failure(reason)
+                {
+                    if let Some(entry) = outgoing.lock().await.remove(token) {
+                        spawn_send_retry(
+                            entry,
+                            token.clone(),
+                            handle.clone(),
+                            Arc::clone(&store),
+                            Arc::clone(&outgoing),
+                            out.clone(),
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -1687,9 +1861,74 @@ async fn event_pump(
     }
 }
 
+/// 发送失败后的自动重试:等待一会儿再重新发起,并沿用原来的传输历史行。
+///
+/// 上限 [`SEND_RETRY_MAX`];重新发起的会话若再次失败,会带着已用次数回到这里继续
+/// 计数(总尝试次数因此有界)。每次尝试前发 [`AppEvent::TransferRetrying`],
+/// 用尽后发 [`AppEvent::TransferRetryGaveUp`],UI 据此提示。
+fn spawn_send_retry(
+    mut entry: OutgoingSend,
+    old_token: String,
+    handle: NodeHandle,
+    store: Arc<Mutex<Store>>,
+    outgoing: Arc<Mutex<HashMap<String, OutgoingSend>>>,
+    out: broadcast::Sender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        while entry.retries < SEND_RETRY_MAX {
+            tokio::time::sleep(SEND_RETRY_DELAY).await;
+            entry.retries += 1;
+            let _ = out.send(AppEvent::TransferRetrying {
+                token: old_token.clone(),
+                attempt: entry.retries,
+                max: SEND_RETRY_MAX,
+                name: entry.name.clone(),
+            });
+            match handle
+                .send_file(entry.to, entry.source.clone(), entry.message.clone())
+                .await
+            {
+                Ok(new_token) => {
+                    let _ = store
+                        .lock()
+                        .await
+                        .retry_transfer(&old_token, &new_token, now_ms());
+                    outgoing.lock().await.insert(new_token, entry);
+                    tracing::info!(target = "fq_core", %old_token, "已重新发起发送");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target = "fq_core",
+                        %old_token,
+                        %e,
+                        "自动重试未能发起(对端暂不可达)"
+                    );
+                }
+            }
+        }
+        tracing::info!(target = "fq_core", %old_token, "自动重试已达上限,放弃发送");
+        let _ = out.send(AppEvent::TransferRetryGaveUp {
+            token: old_token,
+            name: entry.name,
+        });
+    });
+}
+
+/// 对一组本机地址做 /24 直扫:逐地址单播通告(间隔 2ms,避免一次性打满网卡)。
+///
+/// 返回实际探测的地址数;对端收到通告后若首次见我们会立即回发,从而互相发现。
+async fn scan_subnet_with(handle: &NodeHandle, local: &[Ipv4Addr], port: u16) -> usize {
+    let targets = fq_net::subnet_scan_targets(local, port);
+    for target in &targets {
+        handle.announce_to(*target).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    targets.len()
+}
+
 /// 本机软件版本(与 Cargo/安装包版本同源)。
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// 版本号比较(数字分段;段数不足补 0)。返回 `-1/0/1`。
 pub fn compare_versions(a: &str, b: &str) -> i32 {
     let parse = |s: &str| -> Vec<u64> {
@@ -1966,13 +2205,14 @@ fn new_message(envelope: &Envelope, outgoing: bool) -> NewMessage {
         .to
         .map(|to| to.to_hex())
         .unwrap_or_else(|| envelope.from.to_hex());
-    let (kind, body, format) = match &envelope.kind {
+    let (kind, body, format, reply_to) = match &envelope.kind {
         Kind::Text(text) => (
             "text",
             Some(text.body.clone()),
             Some(text.format.as_str().to_string()),
+            text.reply_to.map(|id| id.to_string()),
         ),
-        other => (other.name(), None, None),
+        other => (other.name(), None, None, None),
     };
     NewMessage {
         id: envelope.id.to_string(),
@@ -1982,6 +2222,7 @@ fn new_message(envelope: &Envelope, outgoing: bool) -> NewMessage {
         kind: kind.into(),
         body,
         format,
+        reply_to,
         ts_ms: envelope.ts_ms,
         created_ms: now_ms(),
     }

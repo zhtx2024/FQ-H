@@ -51,7 +51,7 @@ pub mod transfer;
 pub mod transport;
 
 pub use dedup::DedupWindow;
-pub use discovery::{DiscoveryEndpoint, local_ipv4_addresses};
+pub use discovery::{DiscoveryEndpoint, local_ipv4_addresses, subnet_scan_targets};
 pub use error::{Error, Result};
 pub use peers::{PeerChange, PeerInfo, PeerTable};
 pub use transfer::{TransferDirection, build_manifest, sanitize_entry_path};
